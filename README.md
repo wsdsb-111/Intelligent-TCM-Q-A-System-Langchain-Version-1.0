@@ -562,3 +562,6 @@ Copyright (c) 2025 项目作者
 # Intelligent-TCM-Q-A-System-Langchain-Version-
 基于向量检索+知识图谱的混合检索中医问答系统
 >>>>>>> ed1a8af56bf90443e5d4b2579c514d7c78b5a3ab
+=======
+# Intelligent-TCM-Q-A-System-Langchain-Version-1.0
+>>>>>>> 1c2a30d037caf9474c266189b776b779cf91a4ca

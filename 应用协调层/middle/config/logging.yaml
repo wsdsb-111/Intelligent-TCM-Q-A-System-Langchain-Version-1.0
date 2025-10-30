@@ -1,0 +1,162 @@
+#
+ 日志配置文件
+version: 1
+disable_existing_loggers: false
+
+# 格式化器
+formatters:
+  # 标准格式
+  standard:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+    
+  # 详细格式
+  detailed:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(module)s:%(funcName)s:%(lineno)d - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+    
+  # JSON格式
+  json:
+    class: 'pythonjsonlogger.jsonlogger.JsonFormatter'
+    format: '%(asctime)s %(name)s %(levelname)s %(module)s %(funcName)s %(lineno)d %(message)s'
+    
+  # 简单格式
+  simple:
+    format: '%(levelname)s - %(message)s'
+
+# 处理器
+handlers:
+  # 控制台处理器
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: standard
+    stream: ext://sys.stdout
+    
+  # 文件处理器
+  file:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: detailed
+    filename: logs/hybrid_retrieval.log
+    maxBytes: 104857600  # 100MB
+    backupCount: 5
+    encoding: utf-8
+    
+  # 错误文件处理器
+  error_file:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: json
+    filename: logs/error.log
+    maxBytes: 52428800   # 50MB
+    backupCount: 3
+    encoding: utf-8
+    
+  # 性能日志处理器
+  performance:
+    class: logging.handlers.TimedRotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: logs/performance.log
+    when: 'midnight'
+    interval: 1
+    backupCount: 7
+    encoding: utf-8
+    
+  # 审计日志处理器
+  audit:
+    class: logging.handlers.TimedRotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: logs/audit.log
+    when: 'midnight'
+    interval: 1
+    backupCount: 30
+    encoding: utf-8
+
+# 日志记录器
+loggers:
+  # 根日志记录器
+  '':
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+    
+  # 混合检索系统日志
+  langchain:
+    level: DEBUG
+    handlers: [console, file, error_file]
+    propagate: false
+    
+  # 核心模块日志
+  langchain.core:
+    level: DEBUG
+    handlers: [file]
+    propagate: true
+    
+  # API模块日志
+  langchain.api:
+    level: INFO
+    handlers: [file, audit]
+    propagate: true
+    
+  # 检索模块日志
+  langchain.retrievers:
+    level: DEBUG
+    handlers: [file, performance]
+    propagate: true
+    
+  # 融合模块日志
+  langchain.fusion:
+    level: DEBUG
+    handlers: [file, performance]
+    propagate: true
+    
+  # 工具集成日志
+  langchain.integrations:
+    level: INFO
+    handlers: [file]
+    propagate: true
+    
+  # 测试日志
+  langchain.tests:
+    level: DEBUG
+    handlers: [console]
+    propagate: false
+    
+  # 第三方库日志
+  urllib3:
+    level: WARNING
+    handlers: [file]
+    propagate: false
+    
+  requests:
+    level: WARNING
+    handlers: [file]
+    propagate: false
+    
+  neo4j:
+    level: INFO
+    handlers: [file]
+    propagate: false
+    
+  chromadb:
+    level: INFO
+    handlers: [file]
+    propagate: false
+    
+  fastapi:
+    level: INFO
+    handlers: [file, audit]
+    propagate: false
+    
+  uvicorn:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+# 根配置
+root:
+  level: INFO
+  handlers: [console, file]

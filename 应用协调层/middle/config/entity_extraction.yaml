@@ -1,0 +1,39 @@
+# 实体提取配置
+entity_extraction:
+  # 默认模式：knowledge_graph（推荐）、llm、rule
+  default_mode: "knowledge_graph"
+  
+  # 知识图谱配置
+  knowledge_graph:
+    # CSV文件路径（使用纯实体数据集，已移除关系词和剂量信息）
+    csv_file_path: "测试与质量保障层/testdataset/knowledge_graph_entities_only.csv"
+    # 是否启用知识图谱模式
+    enabled: true
+    # 缓存设置
+    cache_enabled: true
+    cache_size: 1000
+  
+  # LLM配置
+  llm:
+    # 是否启用LLM模式
+    enabled: false
+    # 模型服务配置
+    model_service: null
+    # 提取参数
+    max_tokens: 100
+    temperature: 0.1
+  
+  # 规则配置
+  rule:
+    # 是否启用规则模式（作为回退）
+    enabled: true
+    # 预定义实体库
+    predefined_entities:
+      herbs: true
+      symptoms: true
+      formulas: true
+  
+  # 日志配置
+  logging:
+    level: "INFO"
+    enable_debug: false

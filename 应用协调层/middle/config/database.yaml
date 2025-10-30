@@ -1,0 +1,184 @@
+# 数据库配置文
+件
+
+# 主数据库配置
+primary:
+  # 数据库类型
+  type: "sqlite"  # sqlite, postgresql, mysql
+  
+  # SQLite配置
+  sqlite:
+    path: "data/hybrid_retrieval.db"
+    timeout: 30
+    check_same_thread: false
+    
+  # PostgreSQL配置
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "hybrid_retrieval"
+    username: "postgres"
+    password: "password"
+    
+  # MySQL配置
+  mysql:
+    host: "localhost"
+    port: 3306
+    database: "hybrid_retrieval"
+    username: "root"
+    password: "password"
+    charset: "utf8mb4"
+
+# 向量数据库配置
+vector_db:
+  # Faiss配置
+  faiss:
+    persist_directory: "检索与知识层/faiss_rag/向量数据库_768维"  # Faiss数据库路径
+    collection_name: "tcm_qa_collection"  # 与检索层保持一致
+    dimension: 768  # 新增：指定向量维度
+    
+    # 连接配置
+    connection:
+      timeout: 30
+      max_retries: 3
+      retry_delay: 1
+      
+    # 性能配置
+    performance:
+      batch_size: 100
+      max_batch_size: 1000
+      
+# 图数据库配置
+graph_db:
+  # Neo4j配置
+  neo4j:
+    uri: "neo4j://127.0.0.1:7687"  # 更新为新的知识图谱连接URI
+    username: "neo4j"
+    password: "hx1230047"  # 神农中医知识图谱密码
+    database: "neo4j"
+    
+    # 连接配置
+    connection:
+      max_connection_lifetime: 3600  # 1小时
+      max_connection_pool_size: 50
+      connection_acquisition_timeout: 60
+      
+    # 事务配置
+    transaction:
+      timeout: 30
+      max_retry_time: 30
+      
+    # 数据导入配置
+    import:
+      dump_path: "Graphrag/Knowledge_Graph/neo4j.dump"
+      batch_size: 1000
+      
+# 缓存数据库配置
+cache_db:
+  # Redis配置
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+    password: null
+    
+    # 连接配置
+    connection:
+      max_connections: 20
+      socket_timeout: 5
+      socket_connect_timeout: 5
+      
+    # 集群配置
+    cluster:
+      enabled: false
+      nodes: []
+      
+# 连接池配置
+connection_pools:
+  # 主数据库连接池
+  primary:
+    pool_size: 10
+    max_overflow: 20
+    pool_timeout: 30
+    pool_recycle: 3600
+    
+  # 向量数据库连接池
+  vector:
+    pool_size: 5
+    max_overflow: 10
+    pool_timeout: 30
+    
+  # 图数据库连接池
+  graph:
+    pool_size: 5
+    max_overflow: 10
+    pool_timeout: 30
+    
+# 数据迁移配置
+migration:
+  # 自动迁移
+  auto_migrate: true
+  
+  # 迁移脚本目录
+  scripts_directory: "migrations"
+  
+  # 备份配置
+  backup:
+    enabled: true
+    directory: "backups"
+    retention_days: 30
+    
+# 数据同步配置
+synchronization:
+  # 启用数据同步
+  enabled: false
+  
+  # 同步间隔（秒）
+  interval: 3600
+  
+  # 同步策略
+  strategy: "incremental"  # full, incremental
+  
+# 监控配置
+monitoring:
+  # 连接监控
+  connections:
+    enabled: true
+    check_interval: 60
+    
+  # 性能监控
+  performance:
+    enabled: true
+    slow_query_threshold: 1.0  # 秒
+    
+  # 健康检查
+  health_check:
+    enabled: true
+    timeout: 10
+    
+# 安全配置
+security:
+  # 连接加密
+  encryption:
+    enabled: false
+    ssl_mode: "require"
+    
+  # 访问控制
+  access_control:
+    enabled: false
+    allowed_hosts: ["localhost"]
+    
+# 开发配置
+development:
+  # 调试模式
+  debug: true
+  
+  # 测试数据库
+  test_database:
+    type: "sqlite"
+    path: ":memory:"
+    
+  # 数据填充
+  seed_data:
+    enabled: true
+    directory: "seeds"

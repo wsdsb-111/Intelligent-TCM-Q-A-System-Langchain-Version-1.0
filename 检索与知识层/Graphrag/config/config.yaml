@@ -1,0 +1,62 @@
+# 中医知识图谱 - Ollama配置示例
+# 使用本地Yi:6B模型进行GraphRAG处理
+
+graphrag:
+  # 使用Ollama本地模型
+  use_ollama: true
+  
+  # Ollama配置
+  ollama_base_url: "http://localhost:11434"
+  ollama_model: "yi:6b"
+  ollama_model_path: "/root/autodl-tmp/11/model"
+  
+  # OpenAI配置（当use_ollama为false时使用）
+  api_key: "sk-OMD7y2CZnA09ZJgoE0C993Fd8981417d8d31C5CaC7FdC97c"
+  api_base: "http://127.0.0.1:3000/v1"
+  model: "qwen2.5-7b-instruct"
+  embedding_model: "text-embedding-ada-002"
+  
+  # 通用配置
+  max_tokens: 4000
+  temperature: 0.0
+  chunk_size: 1200
+  chunk_overlap: 100
+  entity_types:
+    - "symptom"
+    - "disease"
+    - "syndrome"
+    - "herb"
+    - "formula"
+    - "acupoint"
+    - "meridian"
+    - "organ"
+    - "theory"
+    - "method"
+    - "technique"
+    - "person"
+    - "organization"
+
+csv_export:
+  output_directory: "output"
+  encoding: "utf-8"
+  delimiter: ","
+  quote_char: '"'
+  include_headers: true
+  generate_import_guide: true
+
+file_watcher:
+  input_directory: "input"
+  processed_directory: "processed"
+  supported_formats:
+    - ".txt"
+    - ".md"
+    - ".pdf"
+    - ".docx"
+  max_file_size: 104857600  # 100MB
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: "logs/app.log"
+  max_file_size: 10485760  # 10MB
+  backup_count: 5

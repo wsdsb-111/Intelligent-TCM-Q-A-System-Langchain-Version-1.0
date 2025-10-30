@@ -1,0 +1,47 @@
+{
+  "api_base_url": "http://localhost:8000",
+  "summary": {
+    "total_tests": 3,
+    "successful": 3
+  },
+  "results": [
+    {
+      "test": "纯向量检索流程",
+      "success": true,
+      "routing_decision": null,
+      "num_retrieval_results": 3,
+      "api_total_time_sec": 23.69,
+      "client_response_time_sec": 24.471360206604004,
+      "retrieval_time_sec": 2.77,
+      "enhancement_time_sec": 0.0,
+      "generation_time_sec": 20.92,
+      "answer_preview": "根据参考文档，以下是一些适合经常口臭的中药： 1. 黄连：黄连具有清热解毒、消炎杀菌的作用，可用于治疗口臭。 2. 金银花：金银花有清热解毒、消炎杀菌的作用，可用于治疗口臭。 3. 茯苓：茯苓具有利水消肿、清热解毒的作用，可用于治疗口臭。 4. 甘草：甘草有清热解毒、润喉止咳的作用，可用于治疗口臭。 5. 薄荷：薄荷具有清热解毒、消炎杀菌、去除口臭的作用，可用于治疗口臭。 需要注意的是，中药使用要...",
+      "retrieval_samples": []
+    },
+    {
+      "test": "混合检索流程",
+      "success": true,
+      "routing_decision": null,
+      "num_retrieval_results": 3,
+      "api_total_time_sec": 87.33,
+      "client_response_time_sec": 90.04913997650146,
+      "retrieval_time_sec": 5.86,
+      "enhancement_time_sec": 0.0,
+      "generation_time_sec": 81.48,
+      "answer_preview": "人参和黄芪都是传统中药材，具有多种功效和用途。根据文档内容，人参和黄芪都有补气养血的作用，但具体的应用范围和用法有所不同，需要根据个人情况和病情选择合适的药材和剂量。因此，人参和黄芪的配伍关系需要根据具体情况而定，不能一概而论。同时，需要注意的是，黄芪和人参虽然都有补气养血的作用，但具体的应用范围和用法有所不同，需要根据个人情况和病情选择合适的药材和剂量。在使用中药时，最好咨询专业中医师的意见，以...",
+      "retrieval_samples": []
+    },
+    {
+      "test": "复杂推理查询",
+      "success": true,
+      "routing_decision": null,
+      "api_total_time_sec": 28.93,
+      "client_response_time_sec": 31.59777307510376,
+      "retrieval_time_sec": 5.42,
+      "enhancement_time_sec": 0.0,
+      "generation_time_sec": 23.51,
+      "answer_preview": "治疗失眠多梦的方法包括： 1. 建立规律的睡眠时间表。尽量在同一时间入睡和起床，即使在周末也应保持。 2. 减少咖啡因和酒精的摄入。咖啡因是一种刺激性物质，会使人保持清醒状态。而酒精可能会影响睡眠质量。 3. 避免使用电子设备。电子设备会产生蓝光，这种光线会抑制褪黑激素的分泌，从而影响睡眠。 4. 建立放松的睡前习惯。可以通过冥想、深呼吸、泡澡等方式放松身心。 5. 确保舒适的睡眠环境。保持房间的...",
+      "retrieval_samples": []
+    }
+  ]
+}

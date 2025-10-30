@@ -1,0 +1,237 @@
+# LangChain中间层服务配置文件
+
+# 模型配置
+model:
+  # 基础模型路径（相对于应用协调层/langchain/config目录）
+  base_model_path: "../../../Model Layer/model/qwen/Qwen3-1.7B/Qwen/Qwen3-1___7B"
+  
+  # LoRA适配器路径（使用新的微调模型）
+  adapter_path: "../../../Model Layer/model/checkpoint-7983"  # 新完成的微调模型（2025-10-19）
+  
+  # 设备配置
+  device: "cuda"  # 优先使用GPU推理（如不可用再改回auto）
+  
+  # 生成参数
+  max_new_tokens: 512
+  temperature: 0.5  # 稍微调高温度，避免过度确定性
+  top_p: 0.6        # 保持较低的top_p，减少随机性
+  repetition_penalty: 1.1
+  
+  # 性能优化
+  torch_dtype: "float16"  # 建议与GPU半精度配合
+  low_cpu_mem_usage: true
+  
+# 检索配置
+retrieval:
+  # 默认返回结果数 - 恢复到之前的设置
+  top_k: 5
+  
+  # 最小结果数阈值（如果检索结果少于此数，降低阈值重试）
+  min_results: 3
+  
+  # 融合方法
+  fusion_method: "weighted"  # weighted更适合多源融合，确保向量和图谱结果都能出现
+  
+  # 默认权重（当不使用自适应时）- 恢复到平衡设置
+  weights:
+    vector: 0.5    # 语义理解 - 向量检索理解语义避免幻觉
+    graph: 0.5     # 关系推理 - 图谱提供中医知识关系
+  
+  # 启用的检索模块（已移除BM25，仅保留向量和图谱）
+  enable_bm25: false   # BM25已彻底移除
+  enable_vector: true  # 启用向量检索
+  enable_graph: true   # 启用知识图谱检索
+  
+  # 智能路由配置（新增）
+  enable_intelligent_routing: true  # 启用智能路由分类
+  
+  # 路由策略权重（根据查询类型自动选择）- 二元路由
+  routing_weights:
+    vector_only:      # 纯向量检索（ENTITY_DRIVEN：实体主导型查询）
+      vector: 1.0
+      graph: 0.0
+    hybrid:           # 混合检索（COMPLEX_REASONING：复杂推理查询）
+      vector: 0.5
+      graph: 0.5
+  
+  # BM25配置已完全移除
+  # BM25模块及所有数据已从系统中删除
+  
+  # 向量检索配置  
+  vector:
+    persist_directory: "../../../检索与知识层/faiss_rag/向量数据库_768维"
+    collection_name: "tcm_qa_collection"
+    model_path: "E:/毕业论文和设计/线上智能中医问答项目/Model Layer/model/iic/nlp_gte_sentence-embedding_chinese-base/iic/nlp_gte_sentence-embedding_chinese-base"  # 使用评估系统的本地绝对路径（使用正斜杠）
+    dimension: 768  # 指定向量维度
+    timeout: 60  # 大幅增加超时时间，首次加载模型可能较慢
+    score_threshold: 0.0  # 参考评估系统，移除阈值过滤以确保召回
+  
+  # 图检索配置
+  graph:
+    neo4j_uri: "neo4j://127.0.0.1:7687"  # 更新为新的知识图谱连接URI
+    username: "neo4j"
+    password: "hx1230047"  # 神农中医知识图谱密码
+    database: "neo4j"
+    dump_path: "../../../检索与知识层/Graphrag/Knowledge_Graph/neo4j.dump"
+    timeout: 90
+    max_depth: 2
+    use_llm_entity_extraction: false  # 仅关键词库/规则提取，避免模型耗时
+  
+  # 查询扩展和重排序配置（新增大项目RAG流程使用）
+  enhancement:
+    # 查询扩展模型配置
+    query_expansion:
+      enabled: true
+      model_path: "../../../Model Layer/model/text2vec-base-chinese-paraphrase"  # text2vec查询扩展模型
+      max_expansions: 2  # 最大扩展数量
+      
+    # 重排序模型配置
+    reranking:
+      enabled: true
+      model_path: "../../../Model Layer/model/bge-reranker-base"  # bge-reranker重排序模型
+      top_k: 5  # 重排序后返回的文档数
+  
+  # 智能路由器配置（使用Qwen-Flash API）- 二元路由
+  intelligent_router:
+    enabled: true  # 启用智能路由（ENTITY_DRIVEN / COMPLEX_REASONING）
+    entity_csv_path: "../../../测试与质量保障层/testdataset/knowledge_graph_entities_only.csv"  # 实体关键词库路径
+    qwen_api_config: null  # 禁用外部API，采用本地实体CSV路由
+    confidence_threshold: 0.65  # 置信度阈值
+    # 路由类型说明：
+    # ENTITY_DRIVEN: 实体主导型查询 -> 纯向量检索（vector=1.0, graph=0.0）
+    # COMPLEX_REASONING: 复杂推理查询 -> 混合检索（vector=0.5, graph=0.5）
+
+# RAG链路配置
+rag:
+  # 上下文管理 - 恢复到之前的设置
+  max_context_tokens: 2000  # 恢复到2000，允许更多上下文
+  max_retrieval_results: 10  # 与top_k保持一致
+  enable_context_truncation: true
+  
+  # Prompt配置
+  use_system_prompt: true
+  prompt_template: "rag_template"  # rag_template/concise/direct
+  
+  # 生成配置
+  default_temperature: 0.5  # 稍微调高默认温度，避免过度确定性
+  default_max_tokens: 512
+
+# API配置
+api:
+  # 服务器配置
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1  # 单进程避免模型重复加载
+  reload: false  # 开发环境可设为true
+  
+  # 日志配置
+  log_level: "DEBUG"  # DEBUG/INFO/WARNING/ERROR - 使用DEBUG查看详细检索日志
+  
+  # CORS配置
+  cors_origins:
+    - "*"  # 生产环境应限制具体域名
+  
+  # API文档
+  enable_docs: true
+  docs_url: "/docs"
+  redoc_url: "/redoc"
+  
+  # 速率限制（可选）
+  rate_limit:
+    enabled: false
+    requests_per_minute: 60
+  
+  # 超时配置
+  request_timeout: 120  # 秒
+
+# 日志配置
+logging:
+  # 日志级别
+  level: "INFO"
+  
+  # 日志格式
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # 日志文件
+  file:
+    enabled: true
+    path: "logs/langchain_service.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+  
+  # 控制台输出
+  console:
+    enabled: true
+    colorize: true
+
+# 监控配置
+monitoring:
+  # 性能监控
+  enable_performance_tracking: true
+  
+  # 统计信息
+  enable_statistics: true
+  
+  # 健康检查
+  health_check_interval: 60  # 秒
+
+# 扩展功能配置
+extensions:
+  # 流式输出（预留）
+  streaming:
+    enabled: false
+    chunk_size: 50
+  
+  # 多模态（预留）
+  multimodal:
+    enabled: false
+    max_image_size: 10485760  # 10MB
+    supported_types:
+      - "tongue"
+      - "pulse"
+      - "other"
+  
+  # 会话管理（预留）
+  session:
+    enabled: false
+    timeout: 3600  # 秒
+    max_history: 10
+
+# Dify集成配置（预留）
+dify:
+  # HTTP节点配置
+  http_node:
+    enabled: false
+    endpoint: "http://localhost:8000/api/v1/query"
+    auth_type: "none"  # none/bearer/api_key
+  
+  # 工作流配置
+  workflow:
+    enable_streaming: false
+    response_format: "standard"  # standard/simplified
+
+# 开发配置
+development:
+  # 调试模式
+  debug: false
+  
+  # 热重载
+  auto_reload: false
+  
+  # 详细日志
+  verbose_logging: false
+
+# 生产配置
+production:
+  # 性能优化
+  optimize_for_production: true
+  
+  # 安全配置
+  enable_https: false
+  ssl_certfile: null
+  ssl_keyfile: null
+  
+  # 缓存配置
+  enable_redis_cache: false
+  redis_url: "redis://localhost:6379"
+

@@ -108,7 +108,7 @@ class HybridRetrievalCoordinator:
     
     async def retrieve(self, 
                       query: str, 
-                      config: Optional[RetrievalConfig] = None) -> List[FusedResult]:
+                      config: Optional[RetrievalConfig] = None) -> Tuple[List[str], List[str]]:
         """
         执行智能混合检索
         
@@ -149,8 +149,7 @@ class HybridRetrievalCoordinator:
 
                         if query_type is None:
                             self.logger.warning("路由分类返回None，使用默认混合检索")
-                            routing_decision = "hybrid"
-                            results = await self._retrieve_hybrid(query, retrieval_config, None)
+                            routing_decision = "complex_reasoning"
                         else:
                             weights = self.query_classifier.get_fusion_weights(query_type)
                             self.logger.info(f"路由分类: {query_type.value if query_type else 'None'}, 置信度: {routing_confidence:.2f}, "
@@ -160,26 +159,148 @@ class HybridRetrievalCoordinator:
                             if weights['vector'] == 1.0 and weights['graph'] == 0.0:
                                 # 纯向量检索（ENTITY_DRIVEN）
                                 routing_decision = "vector_only"
-                                results = await self._retrieve_vector_only(query, retrieval_config)
                             else:
                                 # 混合检索（COMPLEX_REASONING：向量50%图谱50%）
                                 routing_decision = "hybrid"
-                                results = await self._retrieve_hybrid(query, retrieval_config, weights)
                     else:
                         self.logger.warning("智能路由器未初始化，使用默认混合检索")
                         routing_decision = "hybrid"
-                        results = await self._retrieve_hybrid(query, retrieval_config, None)
                 except Exception as e:
                     self.logger.error(f"智能路由失败: {e}")
                     import traceback
                     self.logger.error(f"详细错误: {traceback.format_exc()}")
                     routing_decision = "hybrid"
-                    results = await self._retrieve_hybrid(query, retrieval_config, None)
             else:
                 # 不使用智能路由，执行传统混合检索
                 self.logger.info("不使用智能路由，执行传统混合检索")
                 routing_decision = "hybrid"
-                results = await self._retrieve_hybrid(query, retrieval_config, None)
+            
+            # 确保routing_decision已设置
+            if routing_decision is None:
+                routing_decision = "hybrid"
+            
+            # 初始化变量并执行检索
+            vector_results = []
+            graph_results = []
+            
+            if routing_decision == "vector_only":
+                # 纯向量检索：召回3个
+                if self.vector_adapter and retrieval_config.enable_vector:
+                    try:
+                        # 创建向量检索配置（top_k=3）
+                        vector_config = RetrievalConfig(
+                            enable_vector=True,
+                            enable_graph=False,
+                            top_k=3,
+                            fusion_method=retrieval_config.fusion_method,
+                            timeout=retrieval_config.timeout
+                        )
+                        vector_results = await self._safe_retrieve_vector(query, vector_config)
+                        self.logger.info(f"向量检索完成: 返回{len(vector_results)}个结果")
+                    except Exception as e:
+                        self.logger.error(f"向量检索失败: {e}")
+                        vector_results = []
+                
+                # 转换为文本列表
+                vector_texts = [r.content for r in vector_results]
+                generation_contexts = vector_texts
+                evaluation_contexts = vector_texts
+                
+            elif routing_decision == "hybrid":
+                # 混合检索：向量召回5个，图谱召回5个
+                if self.vector_adapter and retrieval_config.enable_vector:
+                    try:
+                        # 创建向量检索配置（top_k=5，召回5个）
+                        vector_config = RetrievalConfig(
+                            enable_vector=True,
+                            enable_graph=False,
+                            top_k=5,
+                            fusion_method=retrieval_config.fusion_method,
+                            timeout=retrieval_config.timeout
+                        )
+                        vector_results = await self._safe_retrieve_vector(query, vector_config)
+                        self.logger.info(f"向量检索完成: 返回{len(vector_results)}个结果")
+                    except Exception as e:
+                        self.logger.error(f"向量检索失败: {e}")
+                        import traceback
+                        self.logger.error(f"向量检索详细错误: {traceback.format_exc()}")
+                        vector_results = []
+                
+                if self.graph_adapter and retrieval_config.enable_graph:
+                    try:
+                        # 创建图谱检索配置（top_k=5，召回5个）
+                        graph_config = RetrievalConfig(
+                            enable_vector=False,
+                            enable_graph=True,
+                            top_k=5,
+                            fusion_method=retrieval_config.fusion_method,
+                            timeout=retrieval_config.timeout
+                        )
+                        graph_results = await self._safe_retrieve_graph(query, graph_config)
+                        self.logger.info(f"图谱检索完成: 返回{len(graph_results)}个结果")
+                        if len(graph_results) == 0:
+                            self.logger.warning(f"图谱检索返回0个结果，检查graph_adapter是否正常")
+                    except Exception as e:
+                        self.logger.error(f"图谱检索失败: {e}")
+                        import traceback
+                        self.logger.error(f"图谱检索详细错误: {traceback.format_exc()}")
+                        graph_results = []
+                
+                # 转换为文本列表
+                vector_texts = [r.content for r in vector_results]
+                graph_texts = [r.content for r in graph_results]
+                # 生成时使用3个向量+5个图谱（共8个）
+                generation_contexts = vector_texts[:3] + graph_texts[:5]
+                # 返回所有检索结果（5向量+5图谱）用于API响应
+                all_retrieval_contexts = vector_texts[:5] + graph_texts[:5]  # 所有10个结果
+                # 评估时仅使用向量（如评估脚本）
+                evaluation_contexts = vector_texts
+            else:
+                # 默认情况（混合检索）
+                routing_decision = "hybrid"
+                if self.vector_adapter and retrieval_config.enable_vector:
+                    try:
+                        vector_config = RetrievalConfig(
+                            enable_vector=True,
+                            enable_graph=False,
+                            top_k=5,
+                            fusion_method=retrieval_config.fusion_method,
+                            timeout=retrieval_config.timeout
+                        )
+                        vector_results = await self._safe_retrieve_vector(query, vector_config)
+                    except Exception as e:
+                        self.logger.error(f"向量检索失败: {e}")
+                        import traceback
+                        self.logger.error(f"向量检索详细错误: {traceback.format_exc()}")
+                        vector_results = []
+                
+                if self.graph_adapter and retrieval_config.enable_graph:
+                    try:
+                        graph_config = RetrievalConfig(
+                            enable_vector=False,
+                            enable_graph=True,
+                            top_k=5,
+                            fusion_method=retrieval_config.fusion_method,
+                            timeout=retrieval_config.timeout
+                        )
+                        graph_results = await self._safe_retrieve_graph(query, graph_config)
+                        if len(graph_results) == 0:
+                            self.logger.warning(f"图谱检索返回0个结果，检查graph_adapter是否正常")
+                    except Exception as e:
+                        self.logger.error(f"图谱检索失败: {e}")
+                        import traceback
+                        self.logger.error(f"图谱检索详细错误: {traceback.format_exc()}")
+                        graph_results = []
+                
+                vector_texts = [r.content for r in vector_results]
+                graph_texts = [r.content for r in graph_results]
+                # 生成时使用3个向量+5个图谱（共8个）
+                generation_contexts = vector_texts[:3] + graph_texts[:5]
+                # 返回所有检索结果（5向量+5图谱）用于API响应
+                all_retrieval_contexts = vector_texts[:5] + graph_texts[:5]  # 所有10个结果
+                evaluation_contexts = vector_texts
+                self.logger.debug(f"默认分支(else): vector_texts={len(vector_texts)}, graph_texts={len(graph_texts)}, "
+                                 f"generation_contexts={len(generation_contexts)}, all_retrieval_contexts={len(all_retrieval_contexts)}")
             
             # 更新路由统计
             if routing_decision:
@@ -187,24 +308,36 @@ class HybridRetrievalCoordinator:
                     self.stats["routing_decisions"].get(routing_decision, 0) + 1
             
             # 检查是否有任何结果
-            if not results:
+            if not generation_contexts:
                 self.logger.warning(f"检索未返回结果: '{query}'")
-                return []
+                return [], []
             
             # 更新统计信息
             self._update_success_stats(start_time, retrieval_config.fusion_method)
             
             total_time = time.time() - start_time
-            self.logger.info(f"智能混合检索完成: 查询='{query}', 路由={routing_decision}, "
-                           f"结果数={len(results)}, 耗时={total_time:.3f}秒")
             
-            # 为结果添加路由元数据
-            for result in results:
-                if hasattr(result, 'metadata') and isinstance(result.metadata, dict):
-                    result.metadata['routing_decision'] = routing_decision
-                    result.metadata['routing_confidence'] = routing_confidence
-            
-            return results
+            # 对于混合检索，需要返回所有结果（10个）用于API响应
+            if routing_decision == "hybrid":
+                # all_retrieval_contexts应该在hybrid分支中已经定义
+                # 如果没有定义，尝试从vector_texts和graph_texts构建（可能来自else分支）
+                if 'all_retrieval_contexts' not in locals():
+                    if 'vector_texts' in locals() and 'graph_texts' in locals():
+                        all_retrieval_contexts = vector_texts[:5] + graph_texts[:5]
+                        self.logger.debug(f"从vector_texts和graph_texts构建all_retrieval_contexts: {len(all_retrieval_contexts)}个")
+                    else:
+                        all_retrieval_contexts = []
+                        self.logger.warning("无法构建all_retrieval_contexts，返回空列表")
+                
+                self.logger.info(f"智能混合检索完成: 查询='{query}', 路由={routing_decision}, "
+                               f"生成文档数={len(generation_contexts)}, 总检索数={len(all_retrieval_contexts)}, 评估文档数={len(evaluation_contexts)}, 耗时={total_time:.3f}秒")
+                self.logger.debug(f"返回结果: generation_contexts={len(generation_contexts)}, all_retrieval={len(all_retrieval_contexts)}, evaluation={len(evaluation_contexts)}")
+                return generation_contexts, all_retrieval_contexts, evaluation_contexts
+            else:
+                # 纯向量检索：返回(generation_contexts, evaluation_contexts)
+                self.logger.info(f"智能混合检索完成: 查询='{query}', 路由={routing_decision}, "
+                               f"生成文档数={len(generation_contexts)}, 评估文档数={len(evaluation_contexts)}, 耗时={total_time:.3f}秒")
+                return generation_contexts, evaluation_contexts
             
         except Exception as e:
             self._update_error_stats(e)
@@ -215,7 +348,9 @@ class HybridRetrievalCoordinator:
             fallback_results = await self._fallback_retrieve(query, retrieval_config)
             if fallback_results:
                 self.logger.info(f"降级策略成功，返回{len(fallback_results)}个结果")
-                return fallback_results
+                # 转换为文本列表
+                fallback_texts = [r.content for r in fallback_results]
+                return fallback_texts, fallback_texts
             
             raise handle_module_error("hybrid_coordinator", e)
     
@@ -411,6 +546,20 @@ class HybridRetrievalCoordinator:
         fused_results = self._fuse_results(results_by_source, config_copy)
         
         self.logger.info(f"混合检索完成: 返回{len(fused_results)}个结果")
+        # 在_retrieve_hybrid末尾，融合后
+        vector_results = results_by_source.get("vector", [])
+        graph_results = results_by_source.get("graph", [])
+        # 为结果添加metadata
+        for result in fused_results:
+            if not hasattr(result, 'metadata'):
+                result.metadata = {}
+            result.metadata["routing_decision"] = "hybrid"  # 假设为混合
+            if result in vector_results:
+                result.metadata["source"] = "vector"
+            elif result in graph_results:
+                result.metadata["source"] = "graph"
+            else:
+                result.metadata["source"] = "unknown"
         return fused_results
     
     async def _parallel_retrieve_hybrid(self, 
@@ -839,7 +988,7 @@ class HybridRetrievalCoordinator:
             "average_response_time": 0.0,
             "fusion_method_usage": {},
             "error_counts": {"timeout": 0, "module_error": 0, "fusion_error": 0},
-            "routing_decisions": {"vector_only": 0, "graph_only": 0, "hybrid": 0}
+            "routing_decisions": {"vector_only": 0, "hybrid": 0}
         }
         self.logger.info("统计信息已重置")
     
@@ -1263,7 +1412,7 @@ def add_fallback_support_to_coordinator():
             self.fallback_manager = FallbackManager(self)
     
     # 修改检索方法以支持降级
-    async def retrieve_with_fallback(self, query: str, config: RetrievalConfig = None) -> List[FusedResult]:
+    async def retrieve_with_fallback(self, query: str, config: RetrievalConfig = None) -> Tuple[List[str], List[str]]:
         """带降级的检索方法"""
         if not hasattr(self, 'fallback_manager'):
             self.init_fallback_manager()
@@ -1297,7 +1446,7 @@ def add_fallback_support_to_coordinator():
         else:
             # 所有模块都失败，返回空结果或默认结果
             self.logger.warning("所有检索模块都不可用，返回空结果")
-            return []
+            return [], []
     
     # 安全的模块调用方法
     

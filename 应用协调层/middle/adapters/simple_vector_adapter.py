@@ -250,7 +250,7 @@ class SimpleVectorAdapter:
             # 执行搜索
             results = self._retrieval_system.search(query, top_k=top_k)
             
-            # 转换为标准格式并应用关键词增强
+            # 转换为标准格式（关键词增强已移除，直接返回原始内容或答案）
             vector_results = []
             for result in results:
                 content = result.get('content', result.get('text', ''))
@@ -262,18 +262,18 @@ class SimpleVectorAdapter:
                 if score < self.score_threshold:
                     continue
                 
-                # 检查是否有完整的对话格式
-                full_conversation = metadata.get('full_conversation')
-                if full_conversation:
-                    # 如果有完整对话格式，使用答案作为内容
+                # 检查是否有完整的对话格式，优先使用答案内容
+                final_content = content
+                if metadata.get('full_conversation'):
+                    # 如果有完整对话格式，使用答案作为内容（不再进行关键词增强）
                     answer = metadata.get('answer', '')
-                    enhanced_content = self._enhance_document_with_keywords(answer, metadata, top_k=8)
-                else:
-                    # 否则使用原始内容
-                    enhanced_content = self._enhance_document_with_keywords(content, metadata, top_k=8)
+                    if answer:
+                        final_content = answer
+                    else:
+                        final_content = content
                 
                 vector_result = VectorResult(
-                    content=enhanced_content,
+                    content=final_content,  # 直接使用内容，不再进行关键词增强
                     score=score,
                     similarity_score=score,
                     embedding_model=self.model_path,

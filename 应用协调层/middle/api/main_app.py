@@ -34,6 +34,8 @@ sys.path.insert(0, project_root)
 
 from middle.utils.logging_utils import get_logger
 from middle.api.v1_routes import router as v1_router, init_routes
+from middle.api.routes.dify_nodes import router as dify_router, init_dify_routes
+from middle.api.routes.openai_compatible import router as openai_router
 from middle.services.model_service import get_model_service
 from middle.services.rag_chain import RAGChain
 from middle.core.retrieval_coordinator import HybridRetrievalCoordinator
@@ -167,8 +169,8 @@ async def lifespan(app: FastAPI):
             model_path=model_path,
             timeout=vector_config.get('timeout', 60),
             score_threshold=vector_config.get('score_threshold', 0.0),
-            enable_keyword_enhancement=True,
-            keyword_csv_path=keyword_csv_path
+            enable_keyword_enhancement=False,  # 已移除关键词增强功能
+            keyword_csv_path=keyword_csv_path  # 保留参数以避免初始化错误，但不会使用
         )
 
         _component_status['vector_adapter'].state = ComponentState.LOADED
@@ -263,6 +265,9 @@ async def lifespan(app: FastAPI):
 
         # 初始化路由依赖
         init_routes(_rag_chain, _retrieval_coordinator)
+        
+        # 初始化Dify节点路由依赖
+        init_dify_routes(_rag_chain, _retrieval_coordinator)
 
         _component_status['rag_chain'].state = ComponentState.LOADED
         _component_status['rag_chain'].load_time = time.time() - start_time
@@ -510,6 +515,16 @@ def create_app() -> FastAPI:
     
     # 注册路由
     app.include_router(v1_router)
+    
+    # 注册Dify节点路由
+    app.include_router(dify_router)
+    logger.info("✅ Dify节点路由已注册: /api/dify/*")
+    
+    # 注册OpenAI兼容路由
+    app.include_router(openai_router)
+    logger.info("✅ OpenAI兼容API已注册: /v1/chat/completions")
+    logger.info(f"✅ API Key: {os.getenv('OPENAI_API_KEY', 'sk-qwen3-1.7b-local-dev-key-12345')}")
+    logger.info("✅ API Base: http://localhost:8000/v1/chat/completions")
     
     # 根路径
     @app.get("/", tags=["root"])

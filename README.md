@@ -1,6 +1,6 @@
 # 基于智能路由混合检索增强生成的智能中医问答系统
 
-[![Version](https://img.shields.io/badge/version-v4.2-blue.svg)](docs/项目介绍.md)
+[![Version](https://img.shields.io/badge/version-v4.4-blue.svg)](docs/项目介绍.md)
 [![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -196,11 +196,63 @@ print(response.json())
 
 系统会根据查询复杂度自动选择最优检索策略：
 
-| 查询类型 | 示例 | 路由策略 | 检索配置 |
-|---------|------|---------|---------|
-| **实体主导型** | "请推荐适合经常口臭的中药" | vector_only | 向量检索(top_k=10) |
-| **复杂推理型** | "如何治疗失眠多梦？" | hybrid | 混合检索(向量5个 + 图谱5个) |
-| **复杂推理型** | "人参和黄芪的配伍关系是什么？" | hybrid | 混合检索(向量5个 + 图谱5个) |
+| 查询类型 | 示例 | 路由策略 | 召回规则 | 生成使用规则 |
+|---------|------|---------|---------|------------|
+| **实体主导型** | "请推荐适合经常口臭的中药" | vector_only | 召回3个向量文档 | 使用3个文档 |
+| **复杂推理型** | "如何治疗失眠多梦？" | hybrid | 召回5向量+5图谱（10个） | 使用3向量+5图谱（8个） |
+| **复杂推理型** | "人参和黄芪的配伍关系是什么？" | hybrid | 召回5向量+5图谱（10个） | 使用3向量+5图谱（8个） |
+
+### 完整RAG流程
+
+```
+1. 启动FastAPI服务并加载组件
+   ├── 加载向量适配器（Faiss + GTE，已移除关键词增强）
+   ├── 加载图谱适配器（Neo4j）
+   ├── 加载智能路由器（Qwen-Flash API）
+   ├── 加载模型服务（Qwen3-1.7B + LoRA）
+   ├── 加载查询扩展模型（text2vec-base-chinese-paraphrase）
+   ├── 加载重排序模型（bge-reranker-base）
+   └── 预热检索组件
+
+2. 用户输入问题
+   └── 接收用户查询请求
+
+3. 智能路由分类
+   ├── 使用Qwen-Flash API进行路由判断
+   ├── 返回路由决策：vector_only 或 hybrid
+   └── 返回路由置信度
+
+4. 查询扩展（可选，已集成）
+   ├── 使用text2vec-base-chinese-paraphrase模型
+   └── 扩展原始查询以提升召回
+
+5. 向量检索/混合检索召回文档
+   ├── vector_only模式：
+   │   ├── 向量检索：召回3个文档
+   │   └── 生成使用：3个文档
+   └── hybrid模式：
+       ├── 向量检索：召回5个文档
+       ├── 图谱检索：召回5个文档
+       └── 总召回：10个文档（5向量+5图谱）
+
+6. 重排序（可选，已集成）
+   ├── 使用bge-reranker-base模型
+   └── 对召回文档按相关性重新排序
+
+7. 选出生成回答的文档
+   ├── vector_only模式：使用所有3个文档
+   └── hybrid模式：使用3个向量文档 + 5个图谱文档（共8个）
+
+8. 模型接受文档生成回答
+   ├── 根据路由决策选择提示词模板
+   ├── 使用统一生成参数（与评估系统一致）
+   └── Qwen3-1.7B模型生成最终答案
+
+9. 输出结果
+   ├── 返回答案和检索结果
+   ├── 检索结果包含source字段标记（vector/graph）
+   └── metadata包含selected_for_generation字段
+```
 
 ### 高级配置
 
@@ -553,15 +605,10 @@ Copyright (c) 2025 项目作者
 
 ---
 
-**当前版本**: v4.2  
-**最后更新**: 2025-10-27  
-**架构状态**: 智能路由混合检索（Faiss向量 + Neo4j知识图谱 + Qwen路由）  
-**模型状态**: Qwen3-1.7B微调模型（checkpoint-7983）
-
-=======
-# Intelligent-TCM-Q-A-System-Langchain-Version-
-基于向量检索+知识图谱的混合检索中医问答系统
->>>>>>> ed1a8af56bf90443e5d4b2579c514d7c78b5a3ab
-=======
-# Intelligent-TCM-Q-A-System-Langchain-Version-1.0
->>>>>>> 1c2a30d037caf9474c266189b776b779cf91a4ca
+**当前版本**: v4.4  
+**最后更新**: 2025-12-XX  
+**架构状态**: 优化RAG流程（Faiss向量 + Neo4j知识图谱 + Qwen-Flash路由）  
+**模型状态**: Qwen3-1.7B微调模型（checkpoint-7983）  
+**检索召回规则**:
+- 纯向量检索（vector_only）：召回3个，使用3个
+- 混合检索（hybrid）：召回5向量+5图谱（10个），生成用3向量+5图谱（8个）

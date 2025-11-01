@@ -115,6 +115,23 @@ class ProductionRAGFlowTester:
                 num_results = meta.get("num_retrieval_results", 0)
                 print(f"📚 检索结果数量: {num_results}")
                 
+                # 验证检索数量
+                num_results = len(result.get("retrieval_results", []))
+                assert num_results == 3, f"预期3个检索文档，实际 {num_results}"
+                # 验证生成文档选择 (假设retrieval_results即用于生成的)
+                assert num_results == 3, "生成应使用3个文档"
+                # 检查扩展/重排序 (假设metadata有字段)
+                meta = result.get("metadata", {})
+                print(f"Debug: metadata = {meta}")  # 添加调试打印
+                if not meta.get("query_expanded", False):
+                    print("⚠️ 查询扩展未启用（预期启用）")
+                else:
+                    print("✅ 查询扩展已启用")
+                if not meta.get("results_reranked", False):
+                    print("⚠️ 重排序未启用（预期启用）")
+                else:
+                    print("✅ 重排序已启用")
+                
                 # 显示答案
                 answer = result.get("answer", "")
                 print(f"\n📝 答案（前200字符）:")
@@ -350,6 +367,134 @@ class ProductionRAGFlowTester:
             traceback.print_exc()
             return False
     
+    def test_hybrid_document_selection(self):
+        print("\n" + "=" * 80)
+        print("测试4: 混合检索文档选择")
+        print("=" * 80)
+        
+        question = "人参和黄芪的配伍关系是什么？"
+        
+        print(f"问题: {question}")
+        
+        try:
+            # 调用API并计时（客户端整体时长）
+            t0 = time.time()
+            response = requests.post(
+                f"{self.api_base_url}/api/v1/query",
+                json={
+                    "query": question,
+                    "temperature": 0.5,
+                    "max_new_tokens": 512
+                },
+                timeout=180
+            )
+            t1 = time.time()
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # 验证结果
+                assert result.get("success"), "查询应该成功"
+                assert result.get("answer"), "应该有答案"
+                
+                # 验证路由决策
+                routing_decision = result.get("metadata", {}).get("routing_decision")
+                print(f"\n✅ 路由决策: {routing_decision}")
+                
+                if routing_decision == "hybrid":
+                    print("✅ 正确：使用了混合检索")
+                else:
+                    print(f"⚠️  预期 hybrid，实际 {routing_decision}")
+                
+                meta = result.get("metadata", {}) or {}
+                num_results = meta.get("num_retrieval_results", 0)
+                print(f"📚 检索结果数量: {num_results}")
+                
+                # 验证检索
+                retrieval_results = result.get("retrieval_results", [])
+                
+                # 调试：打印前几个结果的详细信息
+                print(f"\n🔍 调试信息：")
+                print(f"检索结果总数: {len(retrieval_results)}")
+                if retrieval_results:
+                    print(f"第一个结果类型: {type(retrieval_results[0])}")
+                    print(f"第一个结果内容: {retrieval_results[0]}")
+                    print(f"前3个结果的source字段: {[r.get('source') if isinstance(r, dict) else 'N/A' for r in retrieval_results[:3]]}")
+                    print(f"所有结果的source字段: {[r.get('source') if isinstance(r, dict) else 'N/A' for r in retrieval_results]}")
+                
+                vector_docs = [r for r in retrieval_results if isinstance(r, dict) and r.get("source") == "vector"]
+                graph_docs = [r for r in retrieval_results if isinstance(r, dict) and r.get("source") == "graph"]
+                
+                if len(retrieval_results) != 10:
+                    print(f"⚠️ 预期总检索10（5向量+5图谱），实际 {len(retrieval_results)}")
+                else:
+                    print(f"✅ 总检索数量正确: 10")
+                if len(vector_docs) != 5:
+                    print(f"⚠️ 预期5个向量文档，实际 {len(vector_docs)}")
+                    print(f"   所有source值: {set(r.get('source') if isinstance(r, dict) else None for r in retrieval_results)}")
+                else:
+                    print(f"✅ 向量文档数量正确: 5")
+                if len(graph_docs) != 5:
+                    print(f"⚠️ 预期5个图谱文档，实际 {len(graph_docs)}")
+                    print(f"   所有source值: {set(r.get('source') if isinstance(r, dict) else None for r in retrieval_results)}")
+                assert len(graph_docs) == 5, f"预期5个图谱文档，实际 {len(graph_docs)}"
+                # 验证生成选择 (假设metadata有selected_docs或类似)
+                selected = meta.get("selected_for_generation", retrieval_results)
+                selected_vector = [r for r in selected if r.get("source") == "vector"]
+                selected_graph = [r for r in selected if r.get("source") == "graph"]
+                assert len(selected_vector) == 3, "生成应使用3个向量文档"
+                assert len(selected_graph) == 5, "生成应使用5个图谱文档"
+                
+                # 显示答案
+                answer = result.get("answer", "")
+                print(f"\n📝 答案（前200字符）:")
+                print(answer[:200] + "..." if len(answer) > 200 else answer)
+                
+                # 显示时间
+                total_time = meta.get("total_time", 0)
+                client_time = t1 - t0
+                stages = _extract_stage_times(meta)
+                print(f"\n⏱️  接口reported总耗时: {total_time:.2f}秒 | 客户端测量: {client_time:.2f}秒")
+                print(f"   阶段用时: 检索={stages['retrieval_time_sec']:.2f}s | 增强={stages['enhancement_time_sec']:.2f}s | 生成={stages['generation_time_sec']:.2f}s")
+
+                # 采样部分检索文档
+                retrieval_samples = []
+                try:
+                    raw_retrieval = meta.get("retrieval_results") or []
+                    for item in raw_retrieval[:3]:
+                        if isinstance(item, dict):
+                            retrieval_samples.append(item.get("content") or item.get("text") or str(item)[:200])
+                        else:
+                            retrieval_samples.append(str(item)[:200])
+                except Exception:
+                    pass
+                
+                self.results.append({
+                    "test": "混合检索文档选择",
+                    "success": True,
+                    "routing_decision": routing_decision,
+                    "num_retrieval_results": num_results,
+                    "api_total_time_sec": total_time,
+                    "client_response_time_sec": client_time,
+                    "retrieval_time_sec": stages.get("retrieval_time_sec", 0.0),
+                    "enhancement_time_sec": stages.get("enhancement_time_sec", 0.0),
+                    "generation_time_sec": stages.get("generation_time_sec", 0.0),
+                    "answer_preview": (answer[:200] + ("..." if len(answer) > 200 else "")),
+                    "retrieval_samples": retrieval_samples
+                })
+                
+                return True
+            else:
+                print(f"❌ API调用失败: {response.status_code}")
+                print(response.text)
+                return False
+                
+        except Exception as e:
+            print(f"❌ 测试失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     def print_summary(self):
         """打印测试总结"""
         print("\n" + "=" * 80)
@@ -445,6 +590,9 @@ def main():
         
         # 测试3: 复杂推理
         tester.test_complex_reasoning()
+
+        # 测试4: 混合检索文档选择
+        tester.test_hybrid_document_selection()
         
     except KeyboardInterrupt:
         print("\n\n⚠️  测试被用户中断")

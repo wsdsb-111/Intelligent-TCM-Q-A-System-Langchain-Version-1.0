@@ -167,6 +167,35 @@ def check_data_files(config: dict):
     return all_ok
 
 
+def setup_api_key(config: dict):
+    """
+    设置OpenAI API Key环境变量
+    
+    Args:
+        config: 配置字典
+    """
+    # 优先使用环境变量中已设置的API Key
+    existing_key = os.getenv('OPENAI_API_KEY')
+    if existing_key:
+        print(f"✅ 使用环境变量中的API Key: {existing_key[:20]}...")
+        return
+    
+    # 从配置文件读取API Key（如果配置了）
+    dify_config = config.get('dify', {})
+    api_key = dify_config.get('api_key')
+    
+    if api_key:
+        os.environ['OPENAI_API_KEY'] = api_key
+        print(f"✅ 从配置文件加载API Key: {api_key[:20]}...")
+        return
+    
+    # 使用默认API Key
+    default_key = "sk-qwen3-1.7b-local-dev-key-12345"
+    os.environ['OPENAI_API_KEY'] = default_key
+    print(f"✅ 使用默认API Key: {default_key}")
+    print(f"   提示：可通过环境变量OPENAI_API_KEY或配置文件dify.api_key自定义")
+
+
 def start_service(config: dict, host: str = None, port: int = None, reload: bool = False):
     """
     启动服务
@@ -183,6 +212,13 @@ def start_service(config: dict, host: str = None, port: int = None, reload: bool
         print("❌ uvicorn未安装，请运行: pip install uvicorn")
         sys.exit(1)
     
+    # 设置API Key
+    print("=" * 80)
+    print("🔑 配置OpenAI API Key")
+    print("=" * 80)
+    setup_api_key(config)
+    print("=" * 80)
+    
     # 获取API配置
     api_config = config.get('api', {})
     
@@ -192,6 +228,9 @@ def start_service(config: dict, host: str = None, port: int = None, reload: bool
     _reload = reload or api_config.get('reload', False)
     _log_level = api_config.get('log_level', 'info').lower()
     
+    # 获取API Key用于显示
+    api_key = os.getenv('OPENAI_API_KEY', 'sk-qwen3-1.7b-local-dev-key-12345')
+    
     print("=" * 80)
     print("🚀 启动LangChain中间层服务")
     print("=" * 80)
@@ -200,6 +239,10 @@ def start_service(config: dict, host: str = None, port: int = None, reload: bool
     print(f"健康检查: http://{_host}:{_port}/api/v1/health")
     print(f"热重载: {'启用' if _reload else '禁用'}")
     print(f"日志级别: {_log_level.upper()}")
+    print("-" * 80)
+    print("🔌 OpenAI兼容API")
+    print(f"   API Base: http://{_host}:{_port}/v1/chat/completions")
+    print(f"   API Key: {api_key}")
     print("=" * 80)
     print("\n按 Ctrl+C 停止服务\n")
     

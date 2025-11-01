@@ -69,6 +69,7 @@ class RetrievalResultSchema(BaseModel):
     """检索结果模型"""
     content: str = Field(..., description="文档内容")
     fused_score: float = Field(..., description="融合后评分")
+    source: Optional[str] = Field(None, description="检索源类型（vector/graph）")  # 添加source字段
     source_scores: Dict[str, float] = Field(default_factory=dict, description="各源评分")
     contributing_sources: List[str] = Field(default_factory=list, description="贡献的来源")
     entities: Optional[List[str]] = Field(None, description="实体列表")
@@ -94,7 +95,7 @@ class QueryResponse(BaseModel):
     query: str = Field(..., description="用户问题")
     answer: Optional[str] = Field(None, description="生成的答案")
     retrieval_results: List[RetrievalResultSchema] = Field(default_factory=list, description="检索结果")
-    metadata: Optional[QueryMetadata] = Field(None, description="元数据")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata")
     error: Optional[str] = Field(None, description="错误信息")
     
     class Config:

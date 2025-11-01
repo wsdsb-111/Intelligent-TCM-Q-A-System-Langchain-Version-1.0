@@ -174,10 +174,10 @@ class ModelService:
                 query: str,
                 system_prompt: str = None,
                 max_new_tokens: int = 512,
-                temperature: float = 0.5,  # 稍微调高默认温度
-                top_p: float = 0.6,        # 保持较低的默认top_p
-                repetition_penalty: float = 1.1,
-                mode: str = "default",  # "vector", "kg", "hybrid", "default"
+                temperature: float = 0.1,
+                top_p: float = 0.4,
+                repetition_penalty: float = 1.3,
+                mode: str = "default",
                 **kwargs) -> Dict[str, Any]:
         """
         生成回答
@@ -194,34 +194,20 @@ class ModelService:
         Returns:
             Dict包含answer和metadata
         """
-        # 根据模式设置生成参数
-        # 统一使用评估系统的生成参数（更快更稳）：
-        # max_new_tokens 512, temperature 0.1, top_p 0.4, num_beams 3, do_sample False,
-        # repetition_penalty 1.3, length_penalty 1.0, min_new_tokens 20, no_repeat_ngram_size 5,
-        # early_stopping True, use_cache True
+        # 统一使用评估参数，移除mode逻辑
         generation_params = {
-            "max_new_tokens": 512,
-            "temperature": 0.1,
-            "top_p": 0.4,
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
             "num_beams": 3,
             "do_sample": False,
-            "repetition_penalty": 1.3,
+            "repetition_penalty": repetition_penalty,
             "length_penalty": 1.0,
             "min_new_tokens": 20,
             "no_repeat_ngram_size": 5,
             "early_stopping": True,
             "use_cache": True
         }
-        else:
-            # 默认模式：使用传入的参数
-            generation_params = {
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "repetition_penalty": repetition_penalty,
-                "do_sample": True
-            }
-        
         # 合并kwargs
         generation_params.update(kwargs)
         

@@ -4,73 +4,169 @@
 
 将现有的智能中医问答系统重构为Dify工作流节点，实现可视化编排的RAG流程。每个系统层次对应一个或多个Dify节点，通过工作流实现复杂的智能路由和检索增强流程。
 
-**核心架构变化**:
+**核心架构变化（V3.0 - 全量加载优化）**:
 - **LangChain作为链条** → **Dify工作流**: Dify工作流替代了LangChain的流程编排功能
 - **应用协调层保留**: 应用协调层仍然存在，功能从"链条编排"转变为"独立FastAPI服务"
-- **服务架构选择**: 采用**整体FastAPI服务**的方式，统一管理懒加载机制，为所有Dify节点提供统一的API接口
-- **智能路由升级**: 采用**Qwen-Flash API + 关键词库**混合判断，提升分类准确性
+- **服务架构选择**: 采用**整体FastAPI服务**的方式，**启动时全量加载所有组件**，为所有Dify节点提供统一的API接口
+- **全量加载优化**: 测试验证所有组件一起加载不会爆显存，因此移除懒加载机制，改为启动时全部加载
+- **智能路由升级**: 采用**Qwen-Flash API + 关键词库**混合判断，统一为vector_only/hybrid两种路由策略
+- **精确召回规则**:
+  * 纯向量检索（vector_only）：召回3个文档，生成使用3个文档
+  * 混合检索（hybrid）：召回5向量+5图谱（10个），生成用3向量+5图谱（8个）
+- **移除关键词增强**: 向量检索已移除关键词增强功能，直接返回原始文档内容
+- **检索结果标记**: 所有检索结果正确标记source字段（vector/graph），支持精确过滤
 - **动态配置支持**: 支持在Dify界面配置本地微调模型的提示词模板和生成参数
 
 ## 系统架构设计
 
-### 整体工作流设计（V2.0 - 混合模式）
+### 架构层次对应关系（V3.0）
+
+**核心原则**: 全量加载只优化组件的**加载时机**，**不改变节点的层级划分和职责对应关系**。
+
+```
+系统五层架构          →  Dify工作流节点组              →  组件加载方式
+───────────────────────────────────────────────────────────────────────
+文档层               →  配置节点组                    →  配置文件（无需加载）
+                      ├─ 关键词库配置
+                      └─ 生成参数配置
+
+检索与知识层         →  检索与知识节点组               →  启动时全量加载
+                      ├─ 检索与知识召回节点            →  向量适配器（Faiss+GTE）
+                      │   ├─ 向量检索部分              →  图谱适配器（Neo4j）
+                      │   └─ 图谱检索部分
+                      └─ 查询扩展与重排序节点          →  查询扩展模型（text2vec）
+                                                      →  重排序模型（bge-reranker）
+
+应用协调层           →  应用协调节点组                 →  启动时全量加载
+                      ├─ 智能路由节点组                →  Qwen-Flash API（云服务）
+                      │   ├─ 关键词规则判断节点        →  关键词库（常驻内存）
+                      │   ├─ Qwen-Flash模型判断节点    →  无需本地资源
+                      │   └─ 路由结果融合节点
+                      └─ 生成节点组                    →  生成模型（Qwen3-1.7B+LoRA）
+                          ├─ 配置生成参数节点
+                          └─ 回答生成节点
+
+部署与基础设施层     →  基础设施节点组                 →  已部署（无需Dify管理）
+                      └─ FastAPI服务（后台全量加载）
+
+测试与质量保障层     →  质量监控节点组                 →  日志和监控（无需加载）
+                      └─ 性能监控节点
+```
+
+**关键说明**:
+1. ✅ **检索与知识节点组** 清晰地对应 **"检索与知识层"**，包含向量检索和知识图谱检索功能
+2. ✅ **应用协调节点组** 清晰地对应 **"应用协调层"**，包含智能路由和回答生成功能
+3. ✅ **全量加载** 只是将这些组件在FastAPI启动时全部加载，不影响节点的功能划分
+4. ✅ 在Dify工作流中，仍然可以按照**检索与知识节点组**、**应用协调节点组**等方式组织节点，体现清晰的层次结构
+
+### 整体工作流设计（V3.0 - 全量加载优化）
 
 ```mermaid
 graph TB
     A[用户输入] --> B[关键词规则判断<br/>Dify直接实现]
     B --> C[Qwen-Flash模型判断<br/>Dify直接实现]
     C --> D[路由结果融合<br/>Dify直接实现]
-    D --> E[加载检索组件<br/>FastAPI调用]
-    E --> F[检索与知识召回<br/>FastAPI调用]
-    F --> G[查询扩展与重排序<br/>FastAPI调用]
-    G --> H[关键词增强<br/>Dify直接实现]
-    H --> I[卸载检索组件<br/>FastAPI调用]
-    I --> J[配置生成参数<br/>Dify环境变量]
-    J --> K[加载生成组件<br/>FastAPI调用]
-    K --> L[回答生成<br/>FastAPI调用]
-    L --> M[卸载生成组件<br/>FastAPI调用]
-    M --> N[输出回答<br/>Dify直接实现]
+    D --> E[检索与知识召回<br/>FastAPI调用]
+    E --> F[查询扩展与重排序<br/>FastAPI调用]
+    F --> G[配置生成参数<br/>Dify环境变量]
+    G --> H[回答生成<br/>FastAPI调用]
+    H --> I[输出回答<br/>Dify直接实现]
     
-    O[关键词库<br/>常驻内存] -.-> B
-    P[Qwen-Flash API<br/>阿里云] -.-> C
+    J[关键词库<br/>常驻内存] -.-> B
+    K[Qwen-Flash API<br/>阿里云] -.-> C
+    L[FastAPI服务<br/>全量加载组件] -.-> E
+    L -.-> F
+    L -.-> H
     
     style B fill:#e1f5fe
     style C fill:#e1f5fe
     style D fill:#e1f5fe
-    style H fill:#e1f5fe
-    style J fill:#e1f5fe
-    style N fill:#e1f5fe
+    style G fill:#e1f5fe
+    style I fill:#e1f5fe
     style E fill:#ffecb3
     style F fill:#ffecb3
-    style G fill:#ffecb3
-    style I fill:#ffecb3
-    style K fill:#ffecb3
-    style L fill:#ffecb3
-    style M fill:#ffecb3
+    style H fill:#ffecb3
+    style L fill:#fff9c4
 ```
 
-**实现方式说明**:
+**实现方式说明（V3.0）**:
 - 🔵 **Dify直接实现**: 轻量逻辑，无需外部资源
-- 🟡 **FastAPI调用**: 重度依赖组件，需要懒加载管理
+- 🟡 **FastAPI调用**: 使用已全量加载的组件，无需加载/卸载步骤
+- 🟢 **FastAPI服务**: 启动时全量加载所有组件（向量适配器、图谱适配器、查询扩展模型、重排序模型、生成模型）
 - 🔴 **关键词库**: 常驻内存，从开始到结束不卸载
 
-### 节点职责划分（V2.0）
+**V3.0优化说明**:
+- ✅ **移除加载/卸载节点**: 所有组件在FastAPI服务启动时全量加载
+- ✅ **简化工作流**: 移除4个加载/卸载节点，工作流更简洁高效
+- ✅ **性能提升**: 避免每次请求的加载/卸载开销，响应更快
+- ✅ **测试验证**: 已测试所有组件一起加载不会爆显存，可安全全量加载
+- ✅ **保持层级结构**: 全量加载不影响Dify节点的层级划分，节点仍然按照系统架构层次组织：
+  * **检索与知识节点组**（对应"检索与知识层"）：检索与知识召回节点、查询扩展与重排序节点
+  * **应用协调节点组**（对应"应用协调层"）：智能路由节点、回答生成节点
+  * **输出节点组**（对应"用户交互层"）：输出回答节点
+
+**重要说明**: 全量加载只是优化了组件的**加载时机**（从按需懒加载改为启动时全量加载），**不会改变节点的职责划分和工作流的层次结构**。Dify工作流中的节点仍然可以清晰地对应系统的各个层次，体现"检索与知识层"、"应用协调层"等职责分离。
+
+### 节点职责划分（V3.0 - 全量加载优化）
+
+**节点分层组织（对应系统架构层次）**:
+
+#### 第一层：智能路由节点组（对应"应用协调层"中的路由功能）
 
 | 节点名称 | 实现方式 | 主要功能 | 资源管理 | 输入/输出 |
 |---------|---------|---------|---------|-----------|
 | 关键词规则判断 | Dify直接实现 | 基于关键词库初步分类 | 关键词库常驻内存 | 查询 → 规则结果 |
 | Qwen-Flash模型判断 | Dify直接实现 | 云API语义分类 | 无需本地资源 | 查询 → 模型结果 |
-| 路由结果融合 | Dify直接实现 | 融合规则和模型结果 | 无需资源 | 规则+模型结果 → 最终路由 |
-| 加载检索组件 | FastAPI调用 | 加载Faiss+Neo4j+小模型 | 懒加载管理 | 无 → 组件状态 |
-| 检索与知识召回 | FastAPI调用 | 向量+图谱检索 | 使用已加载组件 | 查询+路由 → 文档 |
-| 查询扩展与重排序 | FastAPI调用 | 文档优化 | 使用已加载组件 | 文档 → 优化文档 |
-| 关键词增强 | Dify直接实现 | 实体识别和关键词提取 | 关键词库常驻内存 | 文档 → 增强文档 |
-| 卸载检索组件 | FastAPI调用 | 释放检索相关资源 | 懒加载管理 | 无 → 释放状态 |
+| 路由结果融合 | Dify直接实现 | 融合规则和模型结果，返回vector_only/hybrid | 无需资源 | 规则+模型结果 → 最终路由 |
+
+#### 第二层：检索与知识节点组（对应"检索与知识层"）
+
+| 节点名称 | 实现方式 | 主要功能 | 资源管理 | 输入/输出 |
+|---------|---------|---------|---------|-----------|
+| 检索与知识召回 | FastAPI调用 | 向量+图谱检索，精确召回规则 | 使用已全量加载的向量适配器、图谱适配器 | 查询+路由 → 文档（含source字段） |
+| 查询扩展与重排序 | FastAPI调用 | 文档优化（text2vec查询扩展 + bge-reranker重排序） | 使用已全量加载的扩展模型、重排序模型 | 文档 → 优化文档 |
+
+#### 第三层：生成节点组（对应"应用协调层"中的生成功能）
+
+| 节点名称 | 实现方式 | 主要功能 | 资源管理 | 输入/输出 |
+|---------|---------|---------|---------|-----------|
 | 配置生成参数 | Dify环境变量 | 设置提示词和生成参数 | 无需资源 | 无 → 配置参数 |
-| 加载生成组件 | FastAPI调用 | 加载Qwen3-1.7B+LoRA | 懒加载管理 | 无 → 组件状态 |
-| 回答生成 | FastAPI调用 | 基于文档生成答案 | 使用已加载组件 | 文档+配置 → 答案 |
-| 卸载生成组件 | FastAPI调用 | 释放生成模型 | 懒加载管理 | 无 → 释放状态 |
-| 输出回答 | Dify直接实现 | 返回结果给用户 | 无需资源 | 答案 → 用户 |
+| 回答生成 | FastAPI调用 | 基于文档生成答案，使用3向量+5图谱（混合模式） | 使用已全量加载的生成模型（Qwen3-1.7B+LoRA） | 文档+配置 → 答案 |
+
+#### 第四层：输出节点组（对应"用户交互层"）
+
+| 节点名称 | 实现方式 | 主要功能 | 资源管理 | 输入/输出 |
+|---------|---------|---------|---------|-----------|
+| 输出回答 | Dify直接实现 | 返回结果给用户，包含retrieval_results和selected_for_generation | 无需资源 | 答案 → 用户 |
+
+**V3.0变化说明**:
+- ❌ **移除节点**: 加载检索组件、卸载检索组件、加载生成组件、卸载生成组件、关键词增强
+- ✅ **保持层级结构**: 节点仍然按照系统架构层次组织，清晰对应"检索与知识层"、"应用协调层"等
+- ✅ **全量加载优势**: 组件在启动时全量加载，但节点职责和层次划分保持不变
+- ✅ **优化节点**: 检索与知识召回节点现在包含精确召回规则（vector_only: 3个，hybrid: 5向量+5图谱）
+- ✅ **新增功能**: 检索结果包含source字段标记，返回结果包含selected_for_generation字段
+- ✅ **移除关键词增强**: 向量检索已移除关键词增强功能，直接返回原始文档内容
+
+**层级对应关系**:
+```
+系统架构层次          →  Dify节点组
+──────────────────────────────────────
+检索与知识层          →  检索与知识节点组
+  ├─ 向量检索         →  检索与知识召回节点（向量部分）
+  └─ 图谱检索         →  检索与知识召回节点（图谱部分）
+
+应用协调层
+  ├─ 智能路由         →  智能路由节点组
+  │   ├─ 关键词规则   →  关键词规则判断节点
+  │   ├─ API判断      →  Qwen-Flash模型判断节点
+  │   └─ 结果融合     →  路由结果融合节点
+  └─ 回答生成         →  生成节点组
+      ├─ 参数配置     →  配置生成参数节点
+      └─ 模型生成     →  回答生成节点
+
+用户交互层            →  输出节点组
+  └─ 结果输出         →  输出回答节点
+```
 
 ## 详细实现方案
 
@@ -175,53 +271,22 @@ outputs.router_type = final_route
 outputs.confidence = 0.9 if inputs.rule_route != "" else 0.8
 ```
 
-### 2. 检索与知识节点组 (Retrieval & Knowledge Nodes)
+### 2. 检索与知识节点组 (Retrieval & Knowledge Nodes) - 对应"检索与知识层"
 
-#### 2.1 加载检索组件节点
+**节点组说明**: 
+- 这个节点组清晰地对应系统的**"检索与知识层"**
+- 虽然底层组件（向量适配器、图谱适配器、查询扩展模型、重排序模型）已经在FastAPI启动时全量加载，但这**不影响节点的职责划分**
+- 在Dify工作流中，这个节点组仍然代表"检索与知识层"的功能，负责从向量数据库和知识图谱中检索相关文档
 
-**实现方式**: Dify HTTP请求节点调用FastAPI
+#### 2.1 检索与知识召回节点（V3.0更新）
 
-**API端点**: `POST /api/dify/load_retrieval_components`
-
-**Dify HTTP请求节点配置**:
-```yaml
-node_type: "http-request"
-node_name: "加载检索组件"
-config:
-  url: "http://localhost:8000/api/dify/load_retrieval_components"
-  method: "POST"
-  body:
-    components: ["faiss", "neo4j", "text2vec", "bge-reranker"]
-  headers:
-    Content-Type: "application/json"
-  timeout: 30
-```
-
-**FastAPI接口实现**:
-```python
-@app.post("/api/dify/load_retrieval_components")
-async def load_retrieval_components(request: LoadComponentsRequest):
-    """加载检索相关组件"""
-    try:
-        # 并行加载所有组件
-        components = await lazy_manager.load_components(
-            components=request.components,
-            parallel=True
-        )
-        return {
-            "success": True,
-            "loaded_components": components,
-            "status": "loaded"
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-```
-
-#### 2.2 检索与知识召回节点
-
-**实现方式**: Dify HTTP请求节点调用FastAPI
+**实现方式**: Dify HTTP请求节点调用FastAPI（使用已全量加载的组件）
 
 **API端点**: `POST /api/dify/retrieve_documents`
+
+**精确召回规则（V3.0）**:
+- **vector_only模式**: 召回3个向量文档，生成使用3个文档
+- **hybrid模式**: 召回5个向量文档 + 5个知识图谱文档（共10个），生成使用3个向量文档 + 5个图谱文档（共8个）
 
 **Dify HTTP请求节点配置**:
 ```yaml
@@ -232,11 +297,13 @@ config:
   method: "POST"
   body:
     query: "{{inputs.query}}"
-    router_type: "{{inputs.final_route}}"
+    router_type: "{{inputs.final_route}}"  # vector_only 或 hybrid
     config:
       enable_vector: true
       enable_graph: true
-      top_k: 10
+      # 精确召回配置
+      vector_top_k: 3  # vector_only模式，或hybrid模式向量召回数
+      graph_top_k: 5   # hybrid模式图谱召回数
       fusion_method: "weighted"
   headers:
     Content-Type: "application/json"
@@ -247,24 +314,55 @@ config:
 ```python
 @app.post("/api/dify/retrieve_documents")
 async def retrieve_documents(request: RetrievalRequest):
-    """执行文档检索"""
+    """执行文档检索（使用已全量加载的组件）"""
     try:
-        # 使用已加载的组件进行检索
-        documents = await retrieval_service.retrieve(
-            query=request.query,
-            router_type=request.router_type,
-            config=request.config
-        )
+        # 使用启动时已全量加载的组件进行检索
+        # 根据路由类型执行精确召回规则
+        if request.router_type == "vector_only":
+            # 纯向量检索：召回3个，使用3个
+            documents = await retrieval_coordinator.retrieve(
+                query=request.query,
+                config=RetrievalConfig(
+                    enable_vector=True,
+                    enable_graph=False,
+                    top_k=3  # 召回3个
+                )
+            )
+            # documents包含3个文档，全部用于生成
+            generation_docs = documents
+            all_retrieval_docs = documents  # 总召回3个
+        else:  # hybrid
+            # 混合检索：向量召回5个，图谱召回5个
+            documents = await retrieval_coordinator.retrieve(
+                query=request.query,
+                config=RetrievalConfig(
+                    enable_vector=True,
+                    enable_graph=True,
+                    vector_top_k=5,  # 向量召回5个
+                    graph_top_k=5   # 图谱召回5个
+                )
+            )
+            # 生成使用：3向量+5图谱（共8个）
+            # documents返回格式: (generation_contexts, all_retrieval_contexts, evaluation_contexts)
+            generation_docs, all_retrieval_docs, evaluation_docs = documents
+        
         return {
             "success": True,
-            "documents": documents,
-            "retrieval_stats": retrieval_service.get_stats()
+            "documents": all_retrieval_docs,  # 所有召回文档（含source字段）
+            "generation_documents": generation_docs,  # 用于生成的文档
+            "routing_decision": request.router_type,
+            "retrieval_stats": {
+                "total_recalled": len(all_retrieval_docs),
+                "for_generation": len(generation_docs),
+                "vector_count": sum(1 for d in all_retrieval_docs if d.get('source') == 'vector'),
+                "graph_count": sum(1 for d in all_retrieval_docs if d.get('source') == 'graph')
+            }
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
 ```
 
-#### 2.3 查询扩展与重排序节点
+#### 2.2 查询扩展与重排序节点（V3.0更新）
 
 **实现方式**: Dify HTTP请求节点调用FastAPI
 
@@ -306,88 +404,112 @@ async def expand_and_rerank(request: ExpandRerankRequest):
         return {"success": False, "error": str(e)}
 ```
 
-#### 2.4 卸载检索组件节点
+**注意（V3.0）**: 
+- ❌ **已移除**: 加载检索组件节点、卸载检索组件节点（V3.0改为启动时全量加载）
+- ❌ **已移除**: 关键词增强节点（向量检索已移除关键词增强功能，直接返回原始文档内容）
 
-**实现方式**: Dify HTTP请求节点调用FastAPI
+### 3. 生成节点组 (Generation Nodes) - V3.0更新
 
-**API端点**: `POST /api/dify/unload_retrieval_components`
+#### 3.1 配置生成参数节点（不变）
+
+**实现方式**: Dify环境变量节点
+
+**核心功能**:
+- 设置提示词模板（根据路由决策选择）
+- 配置生成参数（与评估系统一致）
+- 无需外部资源
+
+#### 3.2 回答生成节点（V3.0更新）
+
+**实现方式**: Dify HTTP请求节点调用FastAPI（使用已全量加载的组件）
+
+**API端点**: `POST /api/dify/generate_answer`
+
+**核心功能（V3.0）**:
+- 使用启动时已全量加载的Qwen3-1.7B+LoRA模型生成答案
+- 根据路由决策选择提示词模板
+- 使用统一的生成参数（与评估系统一致）
+- 根据路由决策选择用于生成的文档数量：
+  * vector_only: 使用3个文档
+  * hybrid: 使用3个向量文档 + 5个图谱文档（共8个）
 
 **Dify HTTP请求节点配置**:
 ```yaml
 node_type: "http-request"
-node_name: "卸载检索组件"
+node_name: "回答生成"
 config:
-  url: "http://localhost:8000/api/dify/unload_retrieval_components"
+  url: "http://localhost:8000/api/dify/generate_answer"
   method: "POST"
   body:
-    components: ["faiss", "neo4j", "text2vec", "bge-reranker"]
+    query: "{{inputs.query}}"
+    documents: "{{inputs.generation_documents}}"  # 已选择用于生成的文档（3或8个）
+    routing_decision: "{{inputs.routing_decision}}"  # vector_only 或 hybrid
+    generation_params:
+      max_new_tokens: 512
+      temperature: 0.1
+      top_p: 0.4
+      num_beams: 3
+      do_sample: false
+      repetition_penalty: 1.3
+      length_penalty: 1.0
+      min_new_tokens: 20
+      no_repeat_ngram_size: 5
+      early_stopping: true
+      use_cache: true
   headers:
     Content-Type: "application/json"
-  timeout: 30
+  timeout: 120
 ```
 
-### 3. 关键词增强节点 (Keyword Enhancement Node)
-
-**实现方式**: Dify代码节点直接实现
-
-**核心功能**:
-- 从文档中提取中医实体和关键词
-- 基于关键词库进行实体识别
-- 轻量级实现，无需外部资源
-
-**关键词库配置**:
+**FastAPI接口实现**:
 ```python
-# 使用现有的实体库
-ENTITY_LIBRARY_PATH = "检索与知识层/keyword/knowledge_graph_entities_only.csv"
-```
-
-**Dify代码节点实现**:
-```python
-import jieba
-import pandas as pd
-from typing import List, Dict
-
-def load_entity_library():
-    """加载实体库（在Dify中可缓存）"""
+@app.post("/api/dify/generate_answer")
+async def generate_answer(request: GenerateAnswerRequest):
+    """基于文档生成答案（使用已全量加载的组件）"""
     try:
-        df = pd.read_csv(ENTITY_LIBRARY_PATH, encoding='utf-8')
-        entities = set(df.iloc[:, 0].dropna().astype(str).tolist())
-        return entities
-    except:
-        return set()
-
-def extract_entities_from_docs(documents: List[Dict], entity_library: set) -> List[Dict]:
-    """从文档中提取实体"""
-    enhanced_docs = []
-    
-    for doc in documents:
-        content = doc.get('content', '')
+        # 使用启动时已全量加载的生成模型
+        # 根据路由决策选择提示词模板
+        prompt_template = get_prompt_template(request.routing_decision)
         
-        # 使用jieba分词
-        words = jieba.lcut(content)
+        # 构建完整提示词
+        full_prompt = build_prompt_with_mode(
+            query=request.query,
+            documents=request.documents,  # 已选择的生成文档（3或8个）
+            template=prompt_template,
+            mode=request.routing_decision
+        )
         
-        # 提取实体
-        entities = []
-        for word in words:
-            if word in entity_library and len(word) > 1:
-                entities.append(word)
+        # 使用统一的生成参数（与评估系统一致）
+        answer = await model_service.generate(
+            query=full_prompt,
+            system_prompt=None,
+            max_new_tokens=request.generation_params.get('max_new_tokens', 512),
+            temperature=request.generation_params.get('temperature', 0.1),
+            top_p=request.generation_params.get('top_p', 0.4),
+            repetition_penalty=request.generation_params.get('repetition_penalty', 1.3),
+            # ... 其他参数
+        )
         
-        # 去重
-        entities = list(set(entities))
-        
-        # 增强文档
-        enhanced_doc = {
-            **doc,
-            'entities': entities,
-            'entity_count': len(entities),
-            'enhanced_content': f"{content}\n[实体: {', '.join(entities)}]"
+        return {
+            "success": True,
+            "answer": answer.get("answer", ""),
+            "metadata": {
+                "routing_decision": request.routing_decision,
+                "documents_used": len(request.documents),
+                "generation_params": request.generation_params,
+                "model": "qwen3-1.7b-finetuned",
+                "selected_for_generation": request.documents  # 包含source字段的文档
+            }
         }
-        enhanced_docs.append(enhanced_doc)
-    
-    return enhanced_docs
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+```
 
-# 加载实体库（全局缓存）
-if 'entity_library' not in globals():
+**注意（V3.0）**: 
+- ❌ **已移除**: 加载生成组件节点、卸载生成组件节点（V3.0改为启动时全量加载）
+- ✅ **优化**: 回答生成节点直接使用已全量加载的模型，无需加载/卸载步骤
+
+### 4. 输出节点 (Output Node) - V3.0更新
     entity_library = load_entity_library()
 
 # 处理文档
@@ -474,68 +596,6 @@ config:
   timeout: 60
 ```
 
-#### 4.3 回答生成节点
-
-**实现方式**: Dify HTTP请求节点调用FastAPI
-
-**API端点**: `POST /api/dify/generate_answer`
-
-**Dify HTTP请求节点配置**:
-```yaml
-node_type: "http-request"
-node_name: "回答生成"
-config:
-  url: "http://localhost:8000/api/dify/generate_answer"
-  method: "POST"
-  body:
-    full_prompt: "{{inputs.full_prompt}}"
-    generation_params: "{{inputs.generation_params}}"
-  headers:
-    Content-Type: "application/json"
-  timeout: 120
-```
-
-**FastAPI接口实现**:
-```python
-@app.post("/api/dify/generate_answer")
-async def generate_answer(request: GenerateAnswerRequest):
-    """基于Dify配置的参数生成答案"""
-    try:
-        # 使用已加载的生成组件
-        answer = await generation_service.generate(
-            prompt=request.full_prompt,
-            params=request.generation_params
-        )
-        return {
-            "success": True,
-            "answer": answer,
-            "generation_stats": generation_service.get_stats()
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-```
-
-#### 4.4 卸载生成组件节点
-
-**实现方式**: Dify HTTP请求节点调用FastAPI
-
-**API端点**: `POST /api/dify/unload_generation_component`
-
-**Dify HTTP请求节点配置**:
-```yaml
-node_type: "http-request"
-node_name: "卸载生成组件"
-config:
-  url: "http://localhost:8000/api/dify/unload_generation_component"
-  method: "POST"
-  body:
-    component: "qwen3-1.7b-finetuned"
-  headers:
-    Content-Type: "application/json"
-  timeout: 30
-```
-
-### 5. 输出节点 (Output Node)
 
 **实现方式**: Dify直接实现
 
@@ -544,22 +604,34 @@ config:
 - 添加元数据信息
 - 返回给用户
 
-**Dify代码节点实现**:
+**Dify代码节点实现（V3.0更新）**:
 ```python
-# 格式化最终输出
+from datetime import datetime
+
+# 格式化最终输出（包含检索结果和生成文档追踪）
 final_output = {
     "answer": inputs.answer,
     "query": inputs.query,
-    "entities": inputs.entities,
-    "entity_count": inputs.entity_count,
+    "retrieval_results": inputs.retrieval_results,  # 所有召回文档（含source字段）
+    "selected_for_generation": inputs.generation_documents,  # 实际用于生成的文档（含source字段）
+    "routing_decision": inputs.routing_decision,  # vector_only 或 hybrid
+    "routing_confidence": inputs.routing_confidence,
     "generation_params": inputs.generation_params,
+    "retrieval_stats": {
+        "total_recalled": len(inputs.retrieval_results),
+        "for_generation": len(inputs.generation_documents),
+        "vector_count": sum(1 for d in inputs.retrieval_results if d.get('source') == 'vector'),
+        "graph_count": sum(1 for d in inputs.retrieval_results if d.get('source') == 'graph')
+    },
     "timestamp": datetime.now().isoformat(),
-    "workflow_version": "v2.0"
+    "workflow_version": "v3.0"
 }
 
 # 输出最终结果
 outputs.final_answer = final_output["answer"]
 outputs.metadata = final_output
+outputs.retrieval_results = final_output["retrieval_results"]  # 包含source字段的检索结果
+outputs.selected_for_generation = final_output["selected_for_generation"]  # 用于生成的文档
 ```
 
 ### 6. 模型生成节点 (Model Generation Node)
@@ -708,56 +780,91 @@ class NodeData(BaseModel):
 }
 ```
 
-### 3. 懒加载机制实现（V2.0）
+### 3. 全量加载机制实现（V3.0）
 
-**核心策略**:
+**核心策略（V3.0）**:
 - **关键词库**: 常驻内存，从开始到结束不卸载
-- **检索组件**: 并行加载Faiss+Neo4j+小模型，检索完成后立即卸载
-- **生成组件**: 懒加载Qwen3-1.7B+LoRA，生成完成后立即卸载
+- **所有组件**: FastAPI启动时全量加载，常驻内存（已测试不会爆显存）
 - **云API**: Qwen-Flash无需本地资源，直接调用
+- **移除懒加载**: 简化架构，提升响应速度
 
-**统一懒加载管理器**:
+**统一组件管理器（V3.0全量加载）**:
 ```python
-class UnifiedLazyManager:
-    """统一懒加载管理器 - V2.0"""
+class ComponentManager:
+    """统一组件管理器 - V3.0全量加载"""
     
     def __init__(self):
         self.loaded_components = {}
         self.component_configs = {
-            "faiss": {"path": "检索与知识层/faiss_rag", "memory_usage": "medium"},
-            "neo4j": {"path": "检索与知识层/Graphrag", "memory_usage": "medium"},
-            "text2vec": {"path": "Model Layer/model/text2vec-base-chinese-paraphrase", "memory_usage": "low"},
-            "bge-reranker": {"path": "Model Layer/model/bge-reranker-base", "memory_usage": "low"},
-            "qwen3-1.7b-finetuned": {
-                "base_model_path": "Model Layer/model/qwen/Qwen3-1.7B",
+            "vector_adapter": {
+                "persist_directory": "检索与知识层/faiss_rag/向量数据库_简单查询",
+                "model_path": "GTE模型路径",
+                "memory_usage": "medium"
+            },
+            "graph_adapter": {
+                "neo4j_uri": "bolt://localhost:7687",
+                "username": "neo4j",
+                "password": "your_password",
+                "memory_usage": "medium"
+            },
+            "query_expander": {
+                "path": "Model Layer/model/text2vec-base-chinese-paraphrase",
+                "memory_usage": "low"
+            },
+            "reranker": {
+                "path": "Model Layer/model/bge-reranker-base",
+                "memory_usage": "low"
+            },
+            "generation_model": {
+                "base_model_path": "Model Layer/model/qwen/Qwen3-1.7B/Qwen/Qwen3-1___7B",
                 "adapter_path": "Model Layer/model/checkpoint-7983",
                 "lora_enabled": True,
                 "memory_usage": "high"
             }
         }
     
-    async def load_components(self, components: list, parallel: bool = True):
-        """加载组件"""
-        if parallel:
-            tasks = [self._load_single_component(comp) for comp in components]
-            results = await asyncio.gather(*tasks)
-            return dict(zip(components, results))
-        else:
-            results = {}
-            for comp in components:
-                results[comp] = await self._load_single_component(comp)
-            return results
-    
-    async def unload_components(self, components: list):
-        """卸载组件"""
-        for comp in components:
-            if comp in self.loaded_components:
-                del self.loaded_components[comp]
+    async def load_all_components(self):
+        """启动时全量加载所有组件（V3.0）"""
+        logger.info("🚀 开始全量加载所有组件...")
         
-        # 强制垃圾回收
+        # 并行加载所有组件
+        tasks = [
+            self._load_vector_adapter(),
+            self._load_graph_adapter(),
+            self._load_query_expander(),
+            self._load_reranker(),
+            self._load_generation_model()
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 检查加载结果
+        component_names = ["vector_adapter", "graph_adapter", "query_expander", "reranker", "generation_model"]
+        for name, result in zip(component_names, results):
+            if isinstance(result, Exception):
+                logger.error(f"组件 {name} 加载失败: {result}")
+                raise result
+            else:
+                self.loaded_components[name] = result
+                logger.info(f"✅ 组件 {name} 加载完成")
+        
+        logger.info("✅ 所有组件全量加载完成")
+        return self.loaded_components
+    
+    async def cleanup(self):
+        """关闭时清理所有组件"""
+        logger.info("🛑 清理所有组件...")
+        for name, component in self.loaded_components.items():
+            try:
+                if hasattr(component, 'cleanup'):
+                    await component.cleanup()
+                logger.info(f"✅ 组件 {name} 清理完成")
+            except Exception as e:
+                logger.error(f"组件 {name} 清理失败: {e}")
+        
+        self.loaded_components.clear()
         gc.collect()
         torch.cuda.empty_cache()
-        logger.info(f"组件 {components} 已卸载")
 ```
 
 **节点执行流程**:
@@ -1123,17 +1230,18 @@ DATABASE_MEMORY_LIMIT=2000     # 数据库内存限制（MB）
 - **混合策略**: 关键词规则 + 云API + 本地模型，提高分类准确性
 8. **低配置友好**: 适配8GB显存配置，避免OOM错误
 
-## 技术优势
+## 技术优势（V3.0）
 
 1. **降低复杂度**: 将复杂的RAG流程拆分为可管理的节点
 2. **提高可维护性**: 每个节点职责单一，便于调试和优化
 3. **增强灵活性**: 支持A/B测试不同的节点组合
 4. **便于监控**: 每个节点独立的性能指标和错误追踪
 5. **支持扩展**: 预留接口支持未来功能增强
-6. **显存友好**: 懒加载机制适配低配置环境
-7. **资源高效**: 按需加载模型，避免资源浪费
+6. **全量加载优化**: 测试验证所有组件一起加载不会爆显存，移除懒加载简化架构
+7. **性能提升**: 移除加载/卸载开销，响应更快
+8. **精确召回**: 明确文档召回和使用规则，保证结果质量
 
-## 总结
+## 总结（V3.0）
 
 通过将智能中医问答系统重构为Dify工作流节点，我们实现了：
 
@@ -1142,21 +1250,22 @@ DATABASE_MEMORY_LIMIT=2000     # 数据库内存限制（MB）
 - **灵活配置**: 支持动态调整和优化
 - **生产就绪**: 完整的错误处理和监控体系
 - **未来扩展**: 预留多模态和高级功能接口
-- **显存优化**: 懒加载机制适配低配置环境
-- **资源高效**: 按需加载模型，避免资源浪费
+- **全量加载优化**: 测试验证所有组件一起加载不会爆显存，移除懒加载简化架构
+- **性能提升**: 移除加载/卸载开销，响应更快
 
-**懒加载机制核心优势**:
-- 🔴 **智能路由**: 加载完整微调模型（基础+LoRA），执行混合策略分类后立即卸载，释放显存
-- 🔴 **检索与知识**: 并行加载Faiss向量数据库和Neo4j知识图谱，检索完成后立即卸载
-- 🔴 **查询扩展/重排序**: 使用小模型（text2vec-paraphrase + bge-reranker），可并行加载，执行后同时卸载
-- 🔴 **模型生成**: 加载完整微调模型（基础+LoRA），保持加载状态，避免重复加载开销
-- 🔄 **循环优化**: 下次智能路由时卸载生成模型，加载路由模型
-- ⚡ **并行优化**: 两个小模型可同时加载，总显存使用约800MB，比BERT模型节省30%
+**V3.0核心优势**:
+- ✅ **全量加载**: FastAPI启动时全量加载所有组件（向量适配器、图谱适配器、查询扩展模型、重排序模型、生成模型）
+- ✅ **工作流简化**: 移除4个加载/卸载节点（加载检索组件、卸载检索组件、加载生成组件、卸载生成组件）
+- ✅ **精确召回**: vector_only召回3个使用3个，hybrid召回10个使用8个
+- ✅ **检索标记**: 所有检索结果包含source字段（vector/graph），支持精确过滤
+- ✅ **移除关键词增强**: 向量检索已移除关键词增强功能，直接返回原始文档内容
+- ✅ **统一路由决策**: 统一为vector_only和hybrid两种路由策略
+- ✅ **生成文档追踪**: metadata中包含selected_for_generation字段，追踪实际使用的文档
+- ⚡ **性能提升**: 避免每次请求的加载/卸载开销，响应更快
 - 🚀 **LoRA优势**: LoRA参数小（约100MB），加载速度快，显存占用少
-- 💾 **数据库优化**: Faiss和Neo4j按需加载，避免常驻内存占用
-- 🧠 **混合策略**: Qwen模型推理 + 实体库匹配 + 关键词规则，提高分类准确性
+- 🧠 **混合策略**: Qwen-Flash API + 实体库匹配 + 关键词规则，提高分类准确性
 
-这种架构既保持了现有系统的技术优势，又提供了更好的可维护性和扩展性，特别适合低配置环境的毕业设计展示和后续研究开发。
+这种架构既保持了现有系统的技术优势，又提供了更好的可维护性和扩展性，通过全量加载优化实现了更快的响应速度和更简洁的工作流。
 
 ## 模块功能对照表
 
@@ -1693,34 +1802,42 @@ class UnifiedLazyManager:
     └── node_schemas.py      # 节点请求/响应模型
 ```
 
-#### 2. 主要应用入口（main_app.py）
+#### 2. 主要应用入口（main_app.py - V3.0全量加载）
 
 ```python
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from .core.lazy_manager import UnifiedLazyManager
+from .core.component_manager import ComponentManager  # 全量加载管理器
 from .routes.dify_nodes import router as dify_router
 
-# 全局懒加载管理器
-lazy_manager = UnifiedLazyManager()
+# 全局组件管理器（全量加载）
+component_manager = ComponentManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    # 启动时
-    logger.info("🚀 FastAPI服务启动中...")
+    """应用生命周期管理（V3.0全量加载）"""
+    # 启动时 - 全量加载所有组件
+    logger.info("🚀 FastAPI服务启动中，全量加载所有组件...")
     
-    # 初始化懒加载管理器
-    await lazy_manager.initialize()
+    # 全量加载所有组件
+    await component_manager.load_all_components()
+    # 加载顺序：
+    # 1. 向量适配器（Faiss + GTE）
+    # 2. 图谱适配器（Neo4j）
+    # 3. 查询扩展模型（text2vec-base-chinese-paraphrase）
+    # 4. 重排序模型（bge-reranker-base）
+    # 5. 生成模型（Qwen3-1.7B + LoRA）
+    
+    logger.info("✅ 所有组件已全量加载完成")
     
     yield
     
     # 关闭时
     logger.info("🛑 清理资源...")
-    await lazy_manager.cleanup()
+    await component_manager.cleanup()
 
 app = FastAPI(
-    title="中医智能问答 - Dify节点服务",
+    title="中医智能问答 - Dify节点服务 (V3.0全量加载)",
     lifespan=lifespan
 )
 

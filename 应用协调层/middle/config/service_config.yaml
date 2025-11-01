@@ -13,9 +13,16 @@ model:
   
   # 生成参数
   max_new_tokens: 512
-  temperature: 0.5  # 稍微调高温度，避免过度确定性
-  top_p: 0.6        # 保持较低的top_p，减少随机性
-  repetition_penalty: 1.1
+  temperature: 0.1
+  top_p: 0.4
+  num_beams: 3
+  do_sample: false
+  repetition_penalty: 1.3
+  length_penalty: 1.0
+  min_new_tokens: 20
+  no_repeat_ngram_size: 5
+  early_stopping: true
+  use_cache: true
   
   # 性能优化
   torch_dtype: "float16"  # 建议与GPU半精度配合
@@ -83,7 +90,7 @@ retrieval:
     query_expansion:
       enabled: true
       model_path: "../../../Model Layer/model/text2vec-base-chinese-paraphrase"  # text2vec查询扩展模型
-      max_expansions: 2  # 最大扩展数量
+      max_expansions: 3  # 最大扩展数量
       
     # 重排序模型配置
     reranking:
@@ -197,8 +204,12 @@ extensions:
     timeout: 3600  # 秒
     max_history: 10
 
-# Dify集成配置（预留）
+# Dify集成配置
 dify:
+  # OpenAI兼容API配置
+  api_key: "sk-qwen3-1.7b-local-dev-key-12345"  # OpenAI兼容API的API Key（可通过环境变量OPENAI_API_KEY覆盖）
+  api_base: "http://localhost:8000/v1/chat/completions"  # API Base地址
+  
   # HTTP节点配置
   http_node:
     enabled: false

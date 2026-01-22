@@ -79,7 +79,7 @@ class ConfigManager:
         
         # 配置目录
         if config_dir is None:
-            config_dir = os.path.join(project_root, "langchain", "config")
+            config_dir = Path(__file__).resolve().parent.parent / "config"
         self.config_dir = Path(config_dir)
         
         # 配置选项

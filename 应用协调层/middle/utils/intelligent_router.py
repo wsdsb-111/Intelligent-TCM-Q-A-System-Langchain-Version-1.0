@@ -144,12 +144,22 @@ class IntelligentRouter:
             )
             
             if response.status_code == 200:
-                result = response.json()
-                return result["choices"][0]["message"]["content"].strip()
+                try:
+                    result = response.json()
+                    return result["choices"][0]["message"]["content"].strip()
+                except (json.JSONDecodeError, KeyError, IndexError) as e:
+                    self.logger.error(f"API响应解析失败: {e}, 响应内容: {response.text[:200]}")
+                    return ""
             else:
-                self.logger.error(f"API调用失败: {response.status_code} - {response.text}")
+                self.logger.error(f"API调用失败: {response.status_code} - {response.text[:200]}")
                 return ""
                 
+        except requests.exceptions.Timeout:
+            self.logger.error("API调用超时")
+            return ""
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"API请求异常: {e}")
+            return ""
         except Exception as e:
             self.logger.error(f"API调用异常: {e}")
             return ""

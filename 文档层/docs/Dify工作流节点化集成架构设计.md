@@ -4,18 +4,19 @@
 
 将现有的智能中医问答系统重构为Dify工作流节点，实现可视化编排的RAG流程。每个系统层次对应一个或多个Dify节点，通过工作流实现复杂的智能路由和检索增强流程。
 
-**核心架构变化（V3.0 - 全量加载优化）**:
+**核心架构变化（V4.0 - 检索文档转发架构）**:
 - **LangChain作为链条** → **Dify工作流**: Dify工作流替代了LangChain的流程编排功能
-- **应用协调层保留**: 应用协调层仍然存在，功能从"链条编排"转变为"独立FastAPI服务"
-- **服务架构选择**: 采用**整体FastAPI服务**的方式，**启动时全量加载所有组件**，为所有Dify节点提供统一的API接口
-- **全量加载优化**: 测试验证所有组件一起加载不会爆显存，因此移除懒加载机制，改为启动时全部加载
+- **应用协调层职责转变**: 应用协调层专注于**检索与知识层的文档召回转发**，不再负责生成功能
+- **生成服务迁移**: 生成功能由**Dify工作流通过ollama转发模型服务**处理，FastAPI不再提供本地模型生成API
+- **服务架构选择**: 采用**整体FastAPI服务**的方式，**启动时全量加载检索组件**（向量适配器、图谱适配器、查询扩展模型、重排序模型），为Dify提供检索文档转发服务
+- **全量加载优化**: 检索相关组件（向量适配器、图谱适配器、查询扩展模型、重排序模型）在启动时全量加载，移除懒加载机制
 - **智能路由升级**: 采用**Qwen-Flash API + 关键词库**混合判断，统一为vector_only/hybrid两种路由策略
 - **精确召回规则**:
   * 纯向量检索（vector_only）：召回3个文档，生成使用3个文档
   * 混合检索（hybrid）：召回5向量+5图谱（10个），生成用3向量+5图谱（8个）
 - **移除关键词增强**: 向量检索已移除关键词增强功能，直接返回原始文档内容
 - **检索结果标记**: 所有检索结果正确标记source字段（vector/graph），支持精确过滤
-- **动态配置支持**: 支持在Dify界面配置本地微调模型的提示词模板和生成参数
+- **文档转发核心**: FastAPI的核心职责是将检索与知识层召回的文档通过标准API接口转发给Dify工作流
 
 ## 系统架构设计
 
@@ -37,14 +38,18 @@
                       └─ 查询扩展与重排序节点          →  查询扩展模型（text2vec）
                                                       →  重排序模型（bge-reranker）
 
-应用协调层           →  应用协调节点组                 →  启动时全量加载
+应用协调层           →  应用协调节点组（检索转发）      →  启动时全量加载检索组件
                       ├─ 智能路由节点组                →  Qwen-Flash API（云服务）
                       │   ├─ 关键词规则判断节点        →  关键词库（常驻内存）
                       │   ├─ Qwen-Flash模型判断节点    →  无需本地资源
                       │   └─ 路由结果融合节点
-                      └─ 生成节点组                    →  生成模型（Qwen3-1.7B+LoRA）
-                          ├─ 配置生成参数节点
-                          └─ 回答生成节点
+                      └─ 文档转发服务                  →  FastAPI检索接口
+                          ├─ 检索与知识召回转发        →  向量适配器+图谱适配器
+                          └─ 查询扩展与重排序转发      →  查询扩展模型+重排序模型
+
+生成服务（Dify+Ollama） →  生成节点组（Dify工作流）   →  Ollama转发模型服务
+                      ├─ 配置生成参数节点            →  Dify环境变量
+                      └─ 回答生成节点                →  Ollama API调用
 
 部署与基础设施层     →  基础设施节点组                 →  已部署（无需Dify管理）
                       └─ FastAPI服务（后台全量加载）
@@ -66,17 +71,17 @@ graph TB
     A[用户输入] --> B[关键词规则判断<br/>Dify直接实现]
     B --> C[Qwen-Flash模型判断<br/>Dify直接实现]
     C --> D[路由结果融合<br/>Dify直接实现]
-    D --> E[检索与知识召回<br/>FastAPI调用]
-    E --> F[查询扩展与重排序<br/>FastAPI调用]
+    D --> E[检索与知识召回<br/>FastAPI转发]
+    E --> F[查询扩展与重排序<br/>FastAPI转发]
     F --> G[配置生成参数<br/>Dify环境变量]
-    G --> H[回答生成<br/>FastAPI调用]
+    G --> H[回答生成<br/>Dify调用Ollama]
     H --> I[输出回答<br/>Dify直接实现]
     
     J[关键词库<br/>常驻内存] -.-> B
     K[Qwen-Flash API<br/>阿里云] -.-> C
-    L[FastAPI服务<br/>全量加载组件] -.-> E
+    L[FastAPI服务<br/>检索组件全量加载] -.-> E
     L -.-> F
-    L -.-> H
+    M[Ollama模型服务<br/>转发] -.-> H
     
     style B fill:#e1f5fe
     style C fill:#e1f5fe
@@ -85,27 +90,31 @@ graph TB
     style I fill:#e1f5fe
     style E fill:#ffecb3
     style F fill:#ffecb3
-    style H fill:#ffecb3
+    style H fill:#c8e6c9
     style L fill:#fff9c4
+    style M fill:#c8e6c9
 ```
 
-**实现方式说明（V3.0）**:
-- 🔵 **Dify直接实现**: 轻量逻辑，无需外部资源
-- 🟡 **FastAPI调用**: 使用已全量加载的组件，无需加载/卸载步骤
-- 🟢 **FastAPI服务**: 启动时全量加载所有组件（向量适配器、图谱适配器、查询扩展模型、重排序模型、生成模型）
+**实现方式说明（V4.0）**:
+- 🔵 **Dify直接实现**: 轻量逻辑，无需外部资源（路由、参数配置、输出）
+- 🟡 **FastAPI转发**: 使用已全量加载的检索组件，转发检索文档到Dify（检索召回、查询扩展、重排序）
+- 🟢 **FastAPI服务**: 启动时全量加载检索组件（向量适配器、图谱适配器、查询扩展模型、重排序模型），**不加载生成模型**
 - 🔴 **关键词库**: 常驻内存，从开始到结束不卸载
+- 🟢 **Ollama服务**: 独立运行，Dify直接调用，FastAPI不参与生成流程
 
-**V3.0优化说明**:
-- ✅ **移除加载/卸载节点**: 所有组件在FastAPI服务启动时全量加载
-- ✅ **简化工作流**: 移除4个加载/卸载节点，工作流更简洁高效
-- ✅ **性能提升**: 避免每次请求的加载/卸载开销，响应更快
-- ✅ **测试验证**: 已测试所有组件一起加载不会爆显存，可安全全量加载
-- ✅ **保持层级结构**: 全量加载不影响Dify节点的层级划分，节点仍然按照系统架构层次组织：
-  * **检索与知识节点组**（对应"检索与知识层"）：检索与知识召回节点、查询扩展与重排序节点
-  * **应用协调节点组**（对应"应用协调层"）：智能路由节点、回答生成节点
-  * **输出节点组**（对应"用户交互层"）：输出回答节点
+**V4.0架构说明**:
+- ✅ **职责分离**: FastAPI专注于检索文档转发，生成由Dify通过ollama直接处理
+- ✅ **简化服务**: FastAPI不再加载生成模型，只加载检索相关组件（向量适配器、图谱适配器、查询扩展模型、重排序模型）
+- ✅ **性能优化**: 检索组件全量加载，避免每次请求的加载/卸载开销
+- ✅ **显存优化**: 不加载生成模型，FastAPI显存占用大幅降低
+- ✅ **服务独立**: Ollama服务独立运行，Dify直接调用，无需FastAPI转发
+- ✅ **保持层级结构**: 节点仍然按照系统架构层次组织：
+  * **检索与知识节点组**（对应"检索与知识层"）：检索与知识召回节点、查询扩展与重排序节点（FastAPI转发）
+  * **应用协调节点组**（对应"应用协调层"）：智能路由节点（Dify实现）
+  * **生成节点组**（对应"应用协调层"）：配置生成参数节点、回答生成节点（Dify+Ollama）
+  * **输出节点组**（对应"用户交互层"）：输出回答节点（Dify实现）
 
-**重要说明**: 全量加载只是优化了组件的**加载时机**（从按需懒加载改为启动时全量加载），**不会改变节点的职责划分和工作流的层次结构**。Dify工作流中的节点仍然可以清晰地对应系统的各个层次，体现"检索与知识层"、"应用协调层"等职责分离。
+**重要说明**: FastAPI的职责从"链条编排+生成"转变为"检索文档转发"，生成功能完全由Dify工作流通过ollama API直接调用，FastAPI不再参与生成流程。
 
 ### 节点职责划分（V3.0 - 全量加载优化）
 
@@ -131,7 +140,7 @@ graph TB
 | 节点名称 | 实现方式 | 主要功能 | 资源管理 | 输入/输出 |
 |---------|---------|---------|---------|-----------|
 | 配置生成参数 | Dify环境变量 | 设置提示词和生成参数 | 无需资源 | 无 → 配置参数 |
-| 回答生成 | FastAPI调用 | 基于文档生成答案，使用3向量+5图谱（混合模式） | 使用已全量加载的生成模型（Qwen3-1.7B+LoRA） | 文档+配置 → 答案 |
+| 回答生成 | Dify调用Ollama | 基于文档生成答案，使用3向量+5图谱（混合模式） | Ollama服务独立运行，FastAPI不参与 | 文档+配置 → 答案 |
 
 #### 第四层：输出节点组（对应"用户交互层"）
 
@@ -139,10 +148,12 @@ graph TB
 |---------|---------|---------|---------|-----------|
 | 输出回答 | Dify直接实现 | 返回结果给用户，包含retrieval_results和selected_for_generation | 无需资源 | 答案 → 用户 |
 
-**V3.0变化说明**:
-- ❌ **移除节点**: 加载检索组件、卸载检索组件、加载生成组件、卸载生成组件、关键词增强
+**V4.0变化说明**:
+- ❌ **移除节点**: 加载检索组件、卸载检索组件、加载生成组件、卸载生成组件、关键词增强、FastAPI生成节点
+- ✅ **职责转变**: FastAPI专注于检索文档转发，不再提供生成服务
+- ✅ **生成服务迁移**: 生成功能由Dify工作流通过ollama API直接调用，ollama服务独立运行
 - ✅ **保持层级结构**: 节点仍然按照系统架构层次组织，清晰对应"检索与知识层"、"应用协调层"等
-- ✅ **全量加载优势**: 组件在启动时全量加载，但节点职责和层次划分保持不变
+- ✅ **全量加载优势**: 检索组件在启动时全量加载，但不再加载生成模型
 - ✅ **优化节点**: 检索与知识召回节点现在包含精确召回规则（vector_only: 3个，hybrid: 5向量+5图谱）
 - ✅ **新增功能**: 检索结果包含source字段标记，返回结果包含selected_for_generation字段
 - ✅ **移除关键词增强**: 向量检索已移除关键词增强功能，直接返回原始文档内容
@@ -408,9 +419,9 @@ async def expand_and_rerank(request: ExpandRerankRequest):
 - ❌ **已移除**: 加载检索组件节点、卸载检索组件节点（V3.0改为启动时全量加载）
 - ❌ **已移除**: 关键词增强节点（向量检索已移除关键词增强功能，直接返回原始文档内容）
 
-### 3. 生成节点组 (Generation Nodes) - V3.0更新
+### 3. 生成节点组 (Generation Nodes) - V4.0更新
 
-#### 3.1 配置生成参数节点（不变）
+#### 3.1 配置生成参数节点
 
 **实现方式**: Dify环境变量节点
 
@@ -419,95 +430,64 @@ async def expand_and_rerank(request: ExpandRerankRequest):
 - 配置生成参数（与评估系统一致）
 - 无需外部资源
 
-#### 3.2 回答生成节点（V3.0更新）
+#### 3.2 回答生成节点（V4.0更新 - Ollama转发）
 
-**实现方式**: Dify HTTP请求节点调用FastAPI（使用已全量加载的组件）
+**实现方式**: Dify LLM节点直接调用Ollama API
 
-**API端点**: `POST /api/dify/generate_answer`
-
-**核心功能（V3.0）**:
-- 使用启动时已全量加载的Qwen3-1.7B+LoRA模型生成答案
-- 根据路由决策选择提示词模板
-- 使用统一的生成参数（与评估系统一致）
+**核心功能（V4.0）**:
+- 使用Ollama转发的模型服务生成答案（Ollama服务独立运行）
+- 根据路由决策选择提示词模板（在Dify中配置）
+- 使用统一的生成参数（在Dify中配置）
 - 根据路由决策选择用于生成的文档数量：
   * vector_only: 使用3个文档
   * hybrid: 使用3个向量文档 + 5个图谱文档（共8个）
 
-**Dify HTTP请求节点配置**:
+**Dify LLM节点配置**:
 ```yaml
-node_type: "http-request"
+node_type: "llm"
 node_name: "回答生成"
 config:
-  url: "http://localhost:8000/api/dify/generate_answer"
-  method: "POST"
-  body:
-    query: "{{inputs.query}}"
-    documents: "{{inputs.generation_documents}}"  # 已选择用于生成的文档（3或8个）
-    routing_decision: "{{inputs.routing_decision}}"  # vector_only 或 hybrid
-    generation_params:
-      max_new_tokens: 512
-      temperature: 0.1
-      top_p: 0.4
-      num_beams: 3
-      do_sample: false
-      repetition_penalty: 1.3
-      length_penalty: 1.0
-      min_new_tokens: 20
-      no_repeat_ngram_size: 5
-      early_stopping: true
-      use_cache: true
-  headers:
-    Content-Type: "application/json"
-  timeout: 120
+  provider: "ollama"
+  model: "qwen3-1.7b-finetuned"  # 或您配置的模型名称
+  api_base: "http://localhost:11434"  # Ollama服务地址
+  api_key: ""  # Ollama通常不需要API Key
+  temperature: 0.1
+  max_tokens: 512
+  top_p: 0.4
+  prompt: |
+    基于以下文档，用简洁准确的语言回答问题（参考文档中的关键信息，不要编造）。
+    
+    {% if routing_decision == "hybrid" %}
+    文档（向量检索结果）：
+    {% for doc in vector_documents %}
+    - {{ doc.content }}
+    {% endfor %}
+    
+    文档（知识图谱检索结果）：
+    {% for doc in graph_documents %}
+    - {{ doc.content }}
+    {% endfor %}
+    {% else %}
+    文档：
+    {% for doc in documents %}
+    - {{ doc.content }}
+    {% endfor %}
+    {% endif %}
+    
+    问题：{{ query }}
+    
+    回答：
 ```
 
-**FastAPI接口实现**:
-```python
-@app.post("/api/dify/generate_answer")
-async def generate_answer(request: GenerateAnswerRequest):
-    """基于文档生成答案（使用已全量加载的组件）"""
-    try:
-        # 使用启动时已全量加载的生成模型
-        # 根据路由决策选择提示词模板
-        prompt_template = get_prompt_template(request.routing_decision)
-        
-        # 构建完整提示词
-        full_prompt = build_prompt_with_mode(
-            query=request.query,
-            documents=request.documents,  # 已选择的生成文档（3或8个）
-            template=prompt_template,
-            mode=request.routing_decision
-        )
-        
-        # 使用统一的生成参数（与评估系统一致）
-        answer = await model_service.generate(
-            query=full_prompt,
-            system_prompt=None,
-            max_new_tokens=request.generation_params.get('max_new_tokens', 512),
-            temperature=request.generation_params.get('temperature', 0.1),
-            top_p=request.generation_params.get('top_p', 0.4),
-            repetition_penalty=request.generation_params.get('repetition_penalty', 1.3),
-            # ... 其他参数
-        )
-        
-        return {
-            "success": True,
-            "answer": answer.get("answer", ""),
-            "metadata": {
-                "routing_decision": request.routing_decision,
-                "documents_used": len(request.documents),
-                "generation_params": request.generation_params,
-                "model": "qwen3-1.7b-finetuned",
-                "selected_for_generation": request.documents  # 包含source字段的文档
-            }
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-```
+**Ollama服务配置**:
+- Ollama服务独立运行，不在FastAPI中启动
+- Dify工作流直接调用Ollama的API接口
+- 模型已通过Ollama加载和管理
 
-**注意（V3.0）**: 
-- ❌ **已移除**: 加载生成组件节点、卸载生成组件节点（V3.0改为启动时全量加载）
-- ✅ **优化**: 回答生成节点直接使用已全量加载的模型，无需加载/卸载步骤
+**注意（V4.0）**: 
+- ❌ **已移除**: FastAPI生成节点（`/api/dify/generate_answer`），生成功能完全由Dify通过Ollama处理
+- ✅ **服务独立**: Ollama服务独立运行，FastAPI不参与生成流程
+- ✅ **职责分离**: FastAPI专注于检索文档转发，生成由Dify+Ollama处理
 
 ### 4. 输出节点 (Output Node) - V3.0更新
     entity_library = load_entity_library()
@@ -780,18 +760,20 @@ class NodeData(BaseModel):
 }
 ```
 
-### 3. 全量加载机制实现（V3.0）
+### 3. 全量加载机制实现（V4.0）
 
-**核心策略（V3.0）**:
+**核心策略（V4.0）**:
 - **关键词库**: 常驻内存，从开始到结束不卸载
-- **所有组件**: FastAPI启动时全量加载，常驻内存（已测试不会爆显存）
+- **检索组件**: FastAPI启动时全量加载检索组件（向量适配器、图谱适配器、查询扩展模型、重排序模型），常驻内存
+- **生成模型**: **不加载**，由Ollama服务独立管理，Dify直接调用
 - **云API**: Qwen-Flash无需本地资源，直接调用
-- **移除懒加载**: 简化架构，提升响应速度
+- **移除懒加载**: 检索组件简化架构，提升响应速度
+- **职责分离**: FastAPI只负责检索文档转发，生成由Ollama服务处理
 
-**统一组件管理器（V3.0全量加载）**:
+**统一组件管理器（V4.0检索组件全量加载）**:
 ```python
 class ComponentManager:
-    """统一组件管理器 - V3.0全量加载"""
+    """统一组件管理器 - V4.0检索组件全量加载（不加载生成模型）"""
     
     def __init__(self):
         self.loaded_components = {}
@@ -814,32 +796,27 @@ class ComponentManager:
             "reranker": {
                 "path": "Model Layer/model/bge-reranker-base",
                 "memory_usage": "low"
-            },
-            "generation_model": {
-                "base_model_path": "Model Layer/model/qwen/Qwen3-1.7B/Qwen/Qwen3-1___7B",
-                "adapter_path": "Model Layer/model/checkpoint-7983",
-                "lora_enabled": True,
-                "memory_usage": "high"
             }
+            # 注意：不再包含generation_model，生成由Ollama服务处理
         }
     
     async def load_all_components(self):
-        """启动时全量加载所有组件（V3.0）"""
-        logger.info("🚀 开始全量加载所有组件...")
+        """启动时全量加载检索组件（V4.0）"""
+        logger.info("🚀 开始全量加载检索组件...")
         
-        # 并行加载所有组件
+        # 并行加载检索相关组件（不加载生成模型）
         tasks = [
             self._load_vector_adapter(),
             self._load_graph_adapter(),
             self._load_query_expander(),
-            self._load_reranker(),
-            self._load_generation_model()
+            self._load_reranker()
+            # 注意：不再加载generation_model
         ]
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # 检查加载结果
-        component_names = ["vector_adapter", "graph_adapter", "query_expander", "reranker", "generation_model"]
+        component_names = ["vector_adapter", "graph_adapter", "query_expander", "reranker"]
         for name, result in zip(component_names, results):
             if isinstance(result, Exception):
                 logger.error(f"组件 {name} 加载失败: {result}")
@@ -848,7 +825,7 @@ class ComponentManager:
                 self.loaded_components[name] = result
                 logger.info(f"✅ 组件 {name} 加载完成")
         
-        logger.info("✅ 所有组件全量加载完成")
+        logger.info("✅ 所有检索组件全量加载完成（生成模型由Ollama服务处理）")
         return self.loaded_components
     
     async def cleanup(self):
@@ -956,43 +933,43 @@ class NodeExecutor:
         return result
 ```
 
-**显存优化策略**:
-- **智能路由**: 加载完整微调模型（基础+LoRA），执行混合策略分类后立即卸载，释放显存
-- **检索与知识**: 并行加载Faiss向量数据库和Neo4j知识图谱，检索完成后立即卸载
-- **查询扩展/重排序**: 使用小模型（text2vec-paraphrase + bge-reranker），可并行加载，执行后同时卸载
-- **模型生成**: 加载完整微调模型（基础+LoRA），保持加载状态，避免重复加载开销
-- **下次智能路由**: 卸载生成模型，加载路由模型
-- **并行优化**: 查询扩展和重排序节点可同时加载两个小模型（总显存约800MB）
-- **LoRA优势**: LoRA参数很小（约100MB），加载速度快，显存占用少
-- **数据库优化**: Faiss和Neo4j按需加载，避免常驻内存占用
-- **混合策略**: Qwen模型推理 + 实体库匹配 + 关键词规则，提高分类准确性
+**显存优化策略（V4.0）**:
+- **智能路由**: Qwen-Flash API云服务，无需本地资源
+- **检索与知识**: 启动时全量加载Faiss向量数据库和Neo4j知识图谱，常驻内存
+- **查询扩展/重排序**: 启动时全量加载小模型（text2vec-paraphrase + bge-reranker），常驻内存
+- **模型生成**: **不加载**，由Ollama服务独立管理，FastAPI不参与生成流程
+- **并行优化**: 查询扩展和重排序节点可同时加载两个小模型（总显存约800MB），常驻内存
+- **数据库优化**: Faiss和Neo4j启动时加载，常驻内存，避免重复加载开销
+- **混合策略**: Qwen-Flash API + 关键词规则，提高分类准确性
+- **职责分离**: FastAPI专注于检索，显存占用大幅降低，生成由Ollama服务处理
 
 ## Dify工作流配置（V2.0）
 
 ### 1. 工作流设计（混合模式）
 
-在Dify中创建工作流，按以下顺序连接节点：
+在Dify中创建工作流，按以下顺序连接节点（V4.0）：
 
 ```
 开始 → 关键词规则判断[Dify直接实现] → Qwen-Flash模型判断[Dify直接实现] → 路由结果融合[Dify直接实现]
                     ↓
-加载检索组件[FastAPI调用] → 检索与知识召回[FastAPI调用] → 查询扩展与重排序[FastAPI调用] → 关键词增强[Dify直接实现]
+检索与知识召回[FastAPI转发] → 查询扩展与重排序[FastAPI转发]
                     ↓
-卸载检索组件[FastAPI调用] → 配置生成参数[Dify环境变量] → 加载生成组件[FastAPI调用] → 回答生成[FastAPI调用]
+配置生成参数[Dify环境变量] → 回答生成[Dify调用Ollama]
                     ↓
-卸载生成组件[FastAPI调用] → 输出回答[Dify直接实现] → 结束
+输出回答[Dify直接实现] → 结束
 ```
 
-**实现方式说明**:
-- 🔵 **Dify直接实现**: 轻量逻辑，无需外部资源
-- 🟡 **FastAPI调用**: 重度依赖组件，需要懒加载管理
+**实现方式说明（V4.0）**:
+- 🔵 **Dify直接实现**: 轻量逻辑，无需外部资源（路由、参数配置、输出）
+- 🟡 **FastAPI转发**: 检索文档转发，使用已全量加载的检索组件
+- 🟢 **Ollama服务**: 独立运行，Dify直接调用，FastAPI不参与
 - 🔴 **关键词库**: 常驻内存，从开始到结束不卸载
 
-**资源管理策略**:
+**资源管理策略（V4.0）**:
 - 🔴 **关键词库**: 常驻内存，从开始到结束不卸载
 - 🔴 **Qwen-Flash API**: 云服务，无需本地资源
-- 🔴 **检索组件**: 并行加载Faiss+Neo4j+小模型，检索完成后立即卸载
-- 🔴 **生成组件**: 懒加载Qwen3-1.7B+LoRA，生成完成后立即卸载
+- 🟢 **检索组件**: 启动时全量加载Faiss+Neo4j+小模型，常驻内存
+- 🟢 **生成组件**: **不加载**，由Ollama服务独立管理，Dify直接调用
 - 🔴 **动态配置**: 支持在Dify界面调整提示词模板和生成参数
 
 ### 2. 节点配置参数（V2.0）
@@ -1241,7 +1218,7 @@ DATABASE_MEMORY_LIMIT=2000     # 数据库内存限制（MB）
 7. **性能提升**: 移除加载/卸载开销，响应更快
 8. **精确召回**: 明确文档召回和使用规则，保证结果质量
 
-## 总结（V3.0）
+## 总结（V4.0）
 
 通过将智能中医问答系统重构为Dify工作流节点，我们实现了：
 
@@ -1250,22 +1227,24 @@ DATABASE_MEMORY_LIMIT=2000     # 数据库内存限制（MB）
 - **灵活配置**: 支持动态调整和优化
 - **生产就绪**: 完整的错误处理和监控体系
 - **未来扩展**: 预留多模态和高级功能接口
-- **全量加载优化**: 测试验证所有组件一起加载不会爆显存，移除懒加载简化架构
-- **性能提升**: 移除加载/卸载开销，响应更快
+- **职责分离**: FastAPI专注于检索文档转发，生成由Dify+Ollama处理
+- **服务独立**: Ollama服务独立运行，FastAPI不参与生成流程
 
-**V3.0核心优势**:
-- ✅ **全量加载**: FastAPI启动时全量加载所有组件（向量适配器、图谱适配器、查询扩展模型、重排序模型、生成模型）
-- ✅ **工作流简化**: 移除4个加载/卸载节点（加载检索组件、卸载检索组件、加载生成组件、卸载生成组件）
+**V4.0核心优势**:
+- ✅ **职责分离**: FastAPI专注于检索文档转发，不再提供生成服务
+- ✅ **服务独立**: Ollama服务独立运行，Dify直接调用，无需FastAPI转发
+- ✅ **检索组件全量加载**: FastAPI启动时全量加载检索组件（向量适配器、图谱适配器、查询扩展模型、重排序模型），不加载生成模型
+- ✅ **工作流简化**: 移除生成相关的加载/卸载节点，工作流更简洁
 - ✅ **精确召回**: vector_only召回3个使用3个，hybrid召回10个使用8个
 - ✅ **检索标记**: 所有检索结果包含source字段（vector/graph），支持精确过滤
 - ✅ **移除关键词增强**: 向量检索已移除关键词增强功能，直接返回原始文档内容
 - ✅ **统一路由决策**: 统一为vector_only和hybrid两种路由策略
 - ✅ **生成文档追踪**: metadata中包含selected_for_generation字段，追踪实际使用的文档
-- ⚡ **性能提升**: 避免每次请求的加载/卸载开销，响应更快
-- 🚀 **LoRA优势**: LoRA参数小（约100MB），加载速度快，显存占用少
-- 🧠 **混合策略**: Qwen-Flash API + 实体库匹配 + 关键词规则，提高分类准确性
+- ⚡ **性能提升**: 检索组件全量加载，避免每次请求的加载/卸载开销
+- 💾 **显存优化**: FastAPI不加载生成模型，显存占用大幅降低
+- 🧠 **混合策略**: Qwen-Flash API + 关键词规则，提高分类准确性
 
-这种架构既保持了现有系统的技术优势，又提供了更好的可维护性和扩展性，通过全量加载优化实现了更快的响应速度和更简洁的工作流。
+这种架构既保持了现有系统的技术优势，又通过职责分离实现了更好的可维护性和扩展性。FastAPI专注于检索文档转发，生成功能由Dify工作流通过Ollama服务独立处理，实现了清晰的架构边界和高效的服务协作。
 
 ## 模块功能对照表
 

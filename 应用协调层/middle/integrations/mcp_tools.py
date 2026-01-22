@@ -7,16 +7,147 @@ import json
 import asyncio
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 import sys
 import os
+from pathlib import Path
+
+import requests
+import yaml
+
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
 from middle.core.retrieval_coordinator import HybridRetrievalCoordinator
-from middle.models.data_models import RetrievalConfig, FusedResult, RetrievalSource
+from middle.models.data_models import RetrievalConfig, FusedResult, RetrievalSource, FusionMethod
 from middle.utils.logging_utils import get_logger
+
+
+class ExternalSearchUnavailable(Exception):
+    """当外部网页搜索不可用时抛出的异常"""
+
+
+@dataclass
+class MCPSettings:
+    api_key: str
+    search_endpoint: str
+    timeout: int
+    default_summary: bool
+    default_freshness: str
+
+
+def _to_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_mcp_settings() -> MCPSettings:
+    """从配置文件和环境变量加载MCP相关设置"""
+    default = {
+        "api_key": os.getenv("BOCHA_API_KEY", "sk-ee9c3bd6015549f9bed44cfa8fd6447c"),
+        "search_endpoint": os.getenv("BOCHA_SEARCH_ENDPOINT", "https://api.bochaai.com/v1/web-search"),
+        "timeout": int(os.getenv("BOCHA_SEARCH_TIMEOUT", "10")),
+        "default_summary": _to_bool(os.getenv("MCP_WEB_SEARCH_DEFAULT_SUMMARY", "false"), False),
+        "default_freshness": os.getenv("MCP_WEB_SEARCH_DEFAULT_FRESHNESS", "noLimit"),
+    }
+
+    config_path = Path(__file__).resolve().parent.parent / "config" / "mcp_tools_config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f) or {}
+            # 支持两种根节点: mcp_tools.web_search 或 web_search
+            web_search_cfg = config_data.get("web_search")
+            if web_search_cfg is None:
+                web_search_cfg = config_data.get("mcp_tools", {}).get("web_search", {})
+
+            if isinstance(web_search_cfg, dict):
+                default.update({
+                    "api_key": web_search_cfg.get("api_key", default["api_key"]),
+                    "search_endpoint": web_search_cfg.get("search_endpoint", default["search_endpoint"]),
+                    "timeout": web_search_cfg.get("timeout", default["timeout"]),
+                    "default_summary": _to_bool(web_search_cfg.get("default_summary"), default["default_summary"]),
+                    "default_freshness": web_search_cfg.get("default_freshness", default["default_freshness"]),
+                })
+        except Exception as e:
+            logger = get_logger(__name__)
+            logger.warning("加载mcp_tools_config.yaml失败，将使用默认配置: %s", e)
+
+    return MCPSettings(**default)
+
+
+settings = _load_mcp_settings()
+
+
+@dataclass
+class SearchRequest:
+    query: str
+    limit: int
+    include: Optional[str] = None
+    exclude: Optional[str] = None
+    freshness: Optional[str] = None
+    summary: Optional[bool] = None
+    count: Optional[int] = None
+
+
+class SearchService:
+    logger = get_logger(__name__)
+
+    @classmethod
+    def search_web(cls, request: SearchRequest) -> List[Dict[str, Any]]:
+        headers = {
+            "Authorization": f"Bearer {settings.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "query": request.query,
+            "count": request.count or request.limit,
+            "include": request.include,
+            "exclude": request.exclude,
+            "freshness": request.freshness or settings.default_freshness,
+            "summary": request.summary if request.summary is not None else settings.default_summary
+        }
+        # 清理 None 值，避免发送无效字段
+        payload = {k: v for k, v in payload.items() if v not in [None, ""]}
+
+        try:
+            response = requests.post(
+                settings.search_endpoint,
+                json=payload,
+                headers=headers,
+                timeout=settings.timeout
+            )
+            response.raise_for_status()
+            results = response.json().get("results", [])
+
+            normalized_results = []
+            for item in results:
+                normalized_results.append(
+                    {
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "snippet": item.get("snippet", ""),
+                        "score": item.get("score"),
+                        "source": item.get("source")
+                    }
+                )
+
+            if normalized_results:
+                return normalized_results
+
+            raise ExternalSearchUnavailable("外部搜索服务未返回结果")
+
+        except requests.exceptions.RequestException as req_err:
+            raise ExternalSearchUnavailable(str(req_err)) from req_err
+        except ExternalSearchUnavailable:
+            raise
+        except Exception as e:
+            cls.logger.error("网页搜索失败", exc_info=True)
+            raise ExternalSearchUnavailable(str(e)) from e
 
 
 class MCPToolRegistry:
@@ -202,6 +333,22 @@ class HybridRetrievalMCPTool:
                 "required": []
             }
         )
+
+        # 网页搜索工具
+        self.registry.register_tool(
+            name="web_search",
+            func=self.web_search,
+            description="使用博查API进行网页搜索",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键词"},
+                    "limit": {"type": "integer", "description": "结果数量", "default": 5},
+                    "include": {"type": "string", "description": "指定域名"}
+                },
+                "required": ["query"]
+            }
+        )
     
     async def hybrid_retrieval(self, 
                              query: str,
@@ -224,12 +371,21 @@ class HybridRetrievalMCPTool:
             self.logger.info(f"MCP混合检索: query='{query}', type={retrieval_type}, top_k={top_k}")
             
             # 构建检索配置
+            fusion_enum = fusion_method
+            if isinstance(fusion_method, str):
+                try:
+                    fusion_enum = FusionMethod(fusion_method.lower())
+                except ValueError:
+                    fusion_enum = FusionMethod.RRF if fusion_method.lower() == "rrf" else FusionMethod.WEIGHTED
+
+            enable_vector = retrieval_type in ["hybrid", "vector", "bm25"]
+            enable_graph = retrieval_type in ["hybrid", "graph"]
+
             config = RetrievalConfig(
-                enable_bm25=(retrieval_type in ["hybrid", "bm25"]),
-                enable_vector=(retrieval_type in ["hybrid", "vector"]),
-                enable_graph=(retrieval_type in ["hybrid", "graph"]),
+                enable_vector=enable_vector,
+                enable_graph=enable_graph,
                 top_k=top_k,
-                fusion_method=fusion_method
+                fusion_method=fusion_enum
             )
             
             # 执行检索
@@ -467,6 +623,50 @@ class HybridRetrievalMCPTool:
                 "error": str(e),
                 "collection_time": datetime.now().isoformat()
             }
+
+    async def web_search(
+        self,
+        query: str,
+        limit: int = 5,
+        include: Optional[str] = None,
+        exclude: Optional[str] = None,
+        freshness: Optional[str] = None,
+        summary: Optional[bool] = None,
+        count: Optional[int] = None
+    ) -> Dict[str, Any]:
+        request = SearchRequest(
+            query=query,
+            limit=limit,
+            include=include,
+            exclude=exclude,
+            freshness=freshness,
+            summary=summary,
+            count=count
+        )
+        try:
+            results = SearchService.search_web(request)
+            return {
+                "success": True,
+                "results": results,
+                "source": "external"
+            }
+        except ExternalSearchUnavailable as external_error:
+            return {
+                "success": True,
+                "results": [
+                    {
+                        "title": "外部网页搜索暂不可用",
+                        "url": settings.search_endpoint,
+                        "snippet": f"原始查询: {query}。错误: {external_error}",
+                        "source": "offline_fallback"
+                    }
+                ],
+                "source": "offline_fallback",
+                "external_error": str(external_error)
+            }
+        except Exception as e:
+            self.logger.error("MCP网页搜索失败: %s", e, exc_info=True)
+            return {"success": False, "error": str(e)}
     
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """获取所有工具定义（MCP格式）"""

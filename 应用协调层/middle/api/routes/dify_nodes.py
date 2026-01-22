@@ -16,9 +16,10 @@ from ..schemas.dify_schemas import (
 )
 from ...models.data_models import RetrievalConfig
 from ...utils.logging_utils import get_logger
-from ...services.model_service import get_model_service
-from ...services.rag_chain import RAGChain
-from ...services.prompt_templates import PromptTemplates
+# V4.0: 不再需要model_service和prompt_templates，生成由Ollama处理
+# from ...services.model_service import get_model_service
+# from ...services.prompt_templates import PromptTemplates
+from ...services.rag_chain import RAGChain  # 保留导入用于类型注解
 from ...core.retrieval_coordinator import HybridRetrievalCoordinator
 from ...utils.local_enhancer import LocalQueryExpander, LocalReranker, create_local_expander, create_local_reranker
 import yaml
@@ -29,17 +30,16 @@ logger = get_logger(__name__)
 # 创建路由器
 router = APIRouter(prefix="/api/dify", tags=["Dify节点"])
 
-# 全局变量（将在应用启动时初始化）
+# 全局变量（将在应用启动时初始化）（V4.0: 移除模型服务相关变量）
 _rag_chain: RAGChain = None
 _retrieval_coordinator: HybridRetrievalCoordinator = None
-_model_service = None
-_prompt_templates = None
+# V4.0: 不再需要model_service和prompt_templates
 _expander: LocalQueryExpander = None
 _reranker: LocalReranker = None
 
 
 def get_rag_chain() -> RAGChain:
-    """获取RAG链路依赖"""
+    """获取RAG链路依赖（V4.0: Dify节点不再使用，保留用于兼容性）"""
     if _rag_chain is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -58,14 +58,7 @@ def get_retrieval_coordinator() -> HybridRetrievalCoordinator:
     return _retrieval_coordinator
 
 
-def get_model_service_dependency():
-    """获取模型服务依赖"""
-    if _model_service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="模型服务未初始化"
-        )
-    return _model_service
+# V4.0: 已移除get_model_service_dependency，生成由Ollama处理
 
 
 def _format_documents_for_response(documents: List[str], routing_decision: str, start_index: int = 0) -> List[DocumentSchema]:
@@ -137,8 +130,15 @@ async def retrieve_documents(
             
             # 执行检索（返回格式：Tuple[List[str], List[str]]）
             retrieve_result = await coordinator.retrieve(request.query, retrieval_config)
-            generation_contexts, evaluation_contexts = retrieve_result
-            all_retrieval_contexts = generation_contexts  # 总召回3个
+            
+            # 处理返回值（可能是2个或3个）
+            if len(retrieve_result) == 2:
+                generation_contexts, evaluation_contexts = retrieve_result
+                all_retrieval_contexts = generation_contexts  # 总召回3个
+            elif len(retrieve_result) == 3:
+                generation_contexts, all_retrieval_contexts, evaluation_contexts = retrieve_result
+            else:
+                raise ValueError(f"意外的返回值数量: {len(retrieve_result)}")
             
             logger.info(f"纯向量检索完成: 召回{len(all_retrieval_contexts)}个，用于生成{len(generation_contexts)}个")
             
@@ -152,12 +152,16 @@ async def retrieve_documents(
             
             # 执行检索（返回格式：Tuple[List[str], List[str], List[str]]）
             retrieve_result = await coordinator.retrieve(request.query, retrieval_config)
+            
+            # 处理返回值（可能是2个或3个）
             if len(retrieve_result) == 3:
                 generation_contexts, all_retrieval_contexts, evaluation_contexts = retrieve_result
-            else:
+            elif len(retrieve_result) == 2:
                 # 兼容旧格式
                 generation_contexts, evaluation_contexts = retrieve_result
                 all_retrieval_contexts = generation_contexts
+            else:
+                raise ValueError(f"意外的返回值数量: {len(retrieve_result)}")
             
             logger.info(f"混合检索完成: 总召回{len(all_retrieval_contexts)}个（预期10个），用于生成{len(generation_contexts)}个（预期8个）")
         
@@ -291,99 +295,8 @@ async def expand_and_rerank(
         )
 
 
-@router.post("/generate_answer",
-            response_model=DifyGenerateAnswerResponse,
-            summary="回答生成节点",
-            description="基于文档生成答案（使用已全量加载的组件）")
-async def generate_answer(
-    request: DifyGenerateAnswerRequest,
-    rag_chain: RAGChain = Depends(get_rag_chain)
-) -> DifyGenerateAnswerResponse:
-    """
-    Dify回答生成节点
-    
-    - **query**: 用户查询
-    - **documents**: 已选择用于生成的文档（3或8个）
-    - **routing_decision**: 路由决策（vector_only 或 hybrid）
-    - **generation_params**: 生成参数（与评估系统一致）
-    """
-    try:
-        logger.info(f"Dify生成节点: query='{request.query}', documents={len(request.documents)}个, routing={request.routing_decision.value}")
-        start_time = time.time()
-        
-        # 将DocumentSchema转换为字典格式（用于提示词构建）
-        document_dicts = [doc.dict() for doc in request.documents]
-        
-        # 使用RAGChain的提示词构建逻辑
-        # 根据路由决策选择提示词模板
-        prompt_templates = PromptTemplates()
-        
-        # 构建提示词（使用RAGChain的内部方法）
-        if request.routing_decision == RouterType.VECTOR_ONLY:
-            # 纯向量模式：所有文档都是向量文档
-            prompt = prompt_templates.build_vector_prompt(
-                query=request.query,
-                retrieval_results=document_dicts,
-                max_context_results=len(document_dicts)
-            )
-            generation_mode = "vector"
-        else:  # hybrid
-            # 混合模式：需要分开向量和图谱文档
-            vector_results = [d for d in document_dicts if d.get('source') == 'vector']
-            kg_results = [d for d in document_dicts if d.get('source') == 'graph']
-            
-            prompt = prompt_templates.build_hybrid_prompt(
-                query=request.query,
-                vector_results=vector_results,
-                kg_results=kg_results,
-                max_context_results=3  # 向量3个，图谱5个
-            )
-            generation_mode = "hybrid"
-        
-        # 使用模型服务生成答案
-        model_service = get_model_service()
-        
-        generation_result = model_service.generate(
-            query=prompt,
-            system_prompt=None,
-            max_new_tokens=request.generation_params.max_new_tokens,
-            temperature=request.generation_params.temperature,
-            top_p=request.generation_params.top_p,
-            repetition_penalty=request.generation_params.repetition_penalty,
-            num_beams=request.generation_params.num_beams,
-            do_sample=request.generation_params.do_sample,
-            length_penalty=request.generation_params.length_penalty,
-            min_new_tokens=request.generation_params.min_new_tokens,
-            no_repeat_ngram_size=request.generation_params.no_repeat_ngram_size,
-            early_stopping=request.generation_params.early_stopping,
-            use_cache=request.generation_params.use_cache
-        )
-        
-        generation_time = time.time() - start_time
-        
-        answer = generation_result.get("answer", "")
-        gen_metadata = generation_result.get("metadata", {})
-        
-        return DifyGenerateAnswerResponse(
-            success=True,
-            answer=answer,
-            metadata={
-                "routing_decision": request.routing_decision.value,
-                "documents_used": len(request.documents),
-                "generation_params": request.generation_params.dict(),
-                "model": gen_metadata.get("model", "qwen3-1.7b-finetuned"),
-                "generation_time": round(generation_time, 2),
-                "generation_mode": generation_mode,
-                "selected_for_generation": [doc.dict() for doc in request.documents]  # 包含source字段的文档
-            }
-        )
-    
-    except Exception as e:
-        logger.error(f"Dify生成节点错误: {e}", exc_info=True)
-        return DifyGenerateAnswerResponse(
-            success=False,
-            error=str(e)
-        )
+# V4.0: 已移除生成节点接口，生成功能由Dify工作流通过Ollama服务处理
+# @router.post("/generate_answer") 已删除
 
 
 def init_dify_routes(
@@ -391,18 +304,17 @@ def init_dify_routes(
     retrieval_coordinator: HybridRetrievalCoordinator
 ):
     """
-    初始化Dify节点路由的全局依赖
+    初始化Dify节点路由的全局依赖（V4.0: 专注于检索文档转发）
     
     Args:
-        rag_chain: RAG链路实例
+        rag_chain: RAG链路实例（V4.0: 可为None，Dify节点不再需要）
         retrieval_coordinator: 检索协调器实例
     """
-    global _rag_chain, _retrieval_coordinator, _model_service, _prompt_templates, _expander, _reranker
+    global _rag_chain, _retrieval_coordinator, _expander, _reranker
     
-    _rag_chain = rag_chain
+    _rag_chain = rag_chain  # V4.0: 保留但不使用，用于兼容性
     _retrieval_coordinator = retrieval_coordinator
-    _model_service = get_model_service()
-    _prompt_templates = PromptTemplates()
+    # V4.0: 不再需要model_service和prompt_templates，生成由Ollama处理
     
     # 加载查询扩展和重排序组件（全量加载）
     try:

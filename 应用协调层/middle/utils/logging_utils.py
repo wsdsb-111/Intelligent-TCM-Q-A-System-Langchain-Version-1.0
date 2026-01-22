@@ -33,7 +33,9 @@ LOGGING_CONFIG = {
 }
 
 
-def setup_logging(config: Optional[Dict[str, Any]] = None, log_file_path: Optional[str] = None):
+def setup_logging(config: Optional[Dict[str, Any]] = None,
+                  log_file_path: Optional[str] = None,
+                  level: Optional[str] = None):
     """
     设置日志配置
     
@@ -43,6 +45,16 @@ def setup_logging(config: Optional[Dict[str, Any]] = None, log_file_path: Option
     """
     if config is None:
         config = LOGGING_CONFIG.copy()
+    else:
+        config = config.copy()
+
+    if level:
+        level_name = level.upper()
+        if 'root' in config:
+            config['root']['level'] = level_name
+        for handler_cfg in config.get('handlers', {}).values():
+            if 'level' in handler_cfg:
+                handler_cfg['level'] = level_name
     
     # 如果指定了日志文件路径，更新配置
     if log_file_path:

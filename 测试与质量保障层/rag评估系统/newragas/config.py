@@ -72,7 +72,7 @@ LOG_CONFIG = {
 
 # 检索系统配置
 RETRIEVAL_CONFIG = {
-    "vector_model_path": r"E:\毕业论文和设计\线上智能中医问答项目\Model Layer\model\iic\nlp_gte_sentence-embedding_chinese-base\iic\nlp_gte_sentence-embedding_chinese-base",
+    "vector_model_path": r"E:\毕业论文和设计\线上智能中医问答项目\Model Layer\model\sentence-transformers\nlp_gte_sentence-embedding_chinese-base",
     "faiss_path": str(PROJECT_ROOT / "检索与知识层" / "faiss_rag" / "向量数据库_768维"),
     "vector_dimension": 768,  # 新增：指定向量维度
     "top_k": 3,  # 检索文档数量为3个

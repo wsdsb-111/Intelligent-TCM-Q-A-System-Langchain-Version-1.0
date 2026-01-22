@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "E:\毕业论文和设计\线上智能中医问答项目\应用协调层\middle\scripts\start_fastmcp_server.py", line 106, in <module>
+    server = FastMCP(
+             ^^^^^^^^
+TypeError: FastMCP.__init__() got an unexpected keyword argument 'transport'

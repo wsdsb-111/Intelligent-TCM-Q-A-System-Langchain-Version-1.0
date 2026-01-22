@@ -1,6 +1,7 @@
 """
-LangChain中间层服务启动脚本
+检索文档转发服务启动脚本（V4.0）
 提供简单的命令行启动接口
+专注于检索文档转发，生成功能由Dify通过Ollama处理
 """
 
 import os
@@ -57,13 +58,13 @@ def check_environment():
     python_version = platform.python_version()
     print(f"Python版本: {python_version}")
     
-    # 检查关键依赖
+    # 检查关键依赖（V4.0: 移除生成模型相关依赖）
     dependencies = [
-        ('torch', 'PyTorch'),
-        ('transformers', 'Transformers'),
-        ('peft', 'PEFT'),
+        ('torch', 'PyTorch'),  # 用于查询扩展和重排序模型
+        ('transformers', 'Transformers'),  # 用于查询扩展和重排序模型
         ('fastapi', 'FastAPI'),
         ('uvicorn', 'Uvicorn'),
+        # V4.0: 不再需要peft（PEFT），生成模型由Ollama处理
     ]
     
     missing_deps = []
@@ -114,38 +115,37 @@ def check_data_files(config: dict):
         # 相对于配置文件目录解析
         return (config_dir / relative_path).resolve()
     
-    # 检查模型路径
-    if 'model' in config:
-        base_model_path = config['model'].get('base_model_path')
-        adapter_path = config['model'].get('adapter_path')
-        
-        if base_model_path:
-            full_path = resolve_path(base_model_path)
-            exists = os.path.exists(full_path)
-            checks.append(('基础模型', full_path, exists))
-        
-        if adapter_path:
-            full_path = resolve_path(adapter_path)
-            exists = os.path.exists(full_path)
-            checks.append(('LoRA适配器', full_path, exists))
+    # V4.0: 不再检查生成模型路径，生成由Ollama服务处理
+    # if 'model' in config:
+    #     base_model_path = config['model'].get('base_model_path')
+    #     adapter_path = config['model'].get('adapter_path')
+    #     ...
     
-    # 检查BM25索引
-    if 'retrieval' in config and 'bm25' in config['retrieval']:
-        bm25_config = config['retrieval']['bm25']
+    # 检查查询扩展和重排序模型（检索组件）
+    if 'retrieval' in config and 'enhancement' in config['retrieval']:
+        enhancement_config = config['retrieval']['enhancement']
         
-        # 如果使用分布式引擎，检查split配置
-        if bm25_config.get('use_distributed') and bm25_config.get('split_config_path'):
-            split_config_path = bm25_config.get('split_config_path')
-            full_path = resolve_path(split_config_path)
-            exists = os.path.exists(full_path)
-            checks.append(('BM25 Split配置', full_path, exists))
-        else:
-            # 否则检查单索引文件
-            index_path = bm25_config.get('index_path')
-            if index_path:
-                full_path = resolve_path(index_path)
+        # 检查查询扩展模型
+        if 'query_expansion' in enhancement_config:
+            expansion_config = enhancement_config['query_expansion']
+            if expansion_config.get('enabled') and expansion_config.get('model_path'):
+                model_path = expansion_config.get('model_path')
+                full_path = resolve_path(model_path)
                 exists = os.path.exists(full_path)
-                checks.append(('BM25索引', full_path, exists))
+                checks.append(('查询扩展模型', full_path, exists))
+        
+        # 检查重排序模型
+        if 'reranking' in enhancement_config:
+            rerank_config = enhancement_config['reranking']
+            if rerank_config.get('enabled') and rerank_config.get('model_path'):
+                model_path = rerank_config.get('model_path')
+                full_path = resolve_path(model_path)
+                exists = os.path.exists(full_path)
+                checks.append(('重排序模型', full_path, exists))
+    
+    # V4.0: BM25已移除，不再检查
+    # if 'retrieval' in config and 'bm25' in config['retrieval']:
+    #     ...
     
     # 检查向量数据库
     if 'retrieval' in config and 'vector' in config['retrieval']:
@@ -169,11 +169,12 @@ def check_data_files(config: dict):
 
 def setup_api_key(config: dict):
     """
-    设置OpenAI API Key环境变量
+    设置OpenAI API Key环境变量（V4.0: 可选，仅用于OpenAI兼容API）
     
     Args:
         config: 配置字典
     """
+    # V4.0: API Key主要用于OpenAI兼容API（可选），Dify节点不需要
     # 优先使用环境变量中已设置的API Key
     existing_key = os.getenv('OPENAI_API_KEY')
     if existing_key:
@@ -189,11 +190,11 @@ def setup_api_key(config: dict):
         print(f"✅ 从配置文件加载API Key: {api_key[:20]}...")
         return
     
-    # 使用默认API Key
+    # 使用默认API Key（可选）
     default_key = "sk-qwen3-1.7b-local-dev-key-12345"
     os.environ['OPENAI_API_KEY'] = default_key
     print(f"✅ 使用默认API Key: {default_key}")
-    print(f"   提示：可通过环境变量OPENAI_API_KEY或配置文件dify.api_key自定义")
+    print(f"   提示：Dify节点API不需要API Key，此Key仅用于OpenAI兼容API（可选）")
 
 
 def start_service(config: dict, host: str = None, port: int = None, reload: bool = False):
@@ -212,9 +213,9 @@ def start_service(config: dict, host: str = None, port: int = None, reload: bool
         print("❌ uvicorn未安装，请运行: pip install uvicorn")
         sys.exit(1)
     
-    # 设置API Key
+    # 设置API Key（V4.0: 可选，仅用于OpenAI兼容API）
     print("=" * 80)
-    print("🔑 配置OpenAI API Key")
+    print("🔑 配置OpenAI API Key（可选）")
     print("=" * 80)
     setup_api_key(config)
     print("=" * 80)
@@ -232,7 +233,7 @@ def start_service(config: dict, host: str = None, port: int = None, reload: bool
     api_key = os.getenv('OPENAI_API_KEY', 'sk-qwen3-1.7b-local-dev-key-12345')
     
     print("=" * 80)
-    print("🚀 启动LangChain中间层服务")
+    print("🚀 启动检索文档转发服务（V4.0）")
     print("=" * 80)
     print(f"地址: http://{_host}:{_port}")
     print(f"API文档: http://{_host}:{_port}/docs")
@@ -240,9 +241,39 @@ def start_service(config: dict, host: str = None, port: int = None, reload: bool
     print(f"热重载: {'启用' if _reload else '禁用'}")
     print(f"日志级别: {_log_level.upper()}")
     print("-" * 80)
-    print("🔌 OpenAI兼容API")
+    print("📄 检索文档转发API节点（Dify容器访问）")
+    print("-" * 80)
+    print("1️⃣  纯向量检索节点")
+    print(f"   POST http://host.docker.internal:{_port}/api/dify/retrieve_documents")
+    print(f"   参数: router_type='vector_only'")
+    print(f"   说明: 召回3个向量文档，用于生成3个文档")
+    print()
+    print("2️⃣  混合检索节点")
+    print(f"   POST http://host.docker.internal:{_port}/api/dify/retrieve_documents")
+    print(f"   参数: router_type='hybrid'")
+    print(f"   说明: 召回5向量+5图谱（10个），用于生成3向量+5图谱（8个）")
+    print()
+    print("3️⃣  查询扩展节点")
+    print(f"   POST http://host.docker.internal:{_port}/api/dify/expand_and_rerank")
+    print(f"   说明: 使用text2vec查询扩展，生成相关查询")
+    print()
+    print("4️⃣  重排序节点")
+    print(f"   POST http://host.docker.internal:{_port}/api/dify/expand_and_rerank")
+    print(f"   说明: 使用bge-reranker重排序，优化文档相关性")
+    print()
+    print("5️⃣  通用检索接口（v1）")
+    print(f"   POST http://host.docker.internal:{_port}/api/v1/retrieve")
+    print(f"   说明: 标准检索接口，支持向量和图谱检索")
+    print("-" * 80)
+    print("ℹ️  注意：如果Dify和FastAPI在同一台机器，可使用localhost")
+    print(f"   - 本地访问: http://localhost:{_port}/api/dify/retrieve_documents")
+    print(f"   - Docker访问: http://host.docker.internal:{_port}/api/dify/retrieve_documents")
+    print("-" * 80)
+    print("🔌 OpenAI兼容API（可选）")
     print(f"   API Base: http://{_host}:{_port}/v1/chat/completions")
     print(f"   API Key: {api_key}")
+    print("-" * 80)
+    print("ℹ️  生成功能由Dify工作流通过Ollama服务处理")
     print("=" * 80)
     print("\n按 Ctrl+C 停止服务\n")
     
@@ -259,7 +290,7 @@ def start_service(config: dict, host: str = None, port: int = None, reload: bool
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='LangChain中间层服务启动脚本')
+    parser = argparse.ArgumentParser(description='检索文档转发服务启动脚本（V4.0）')
     
     parser.add_argument(
         '--config',
@@ -297,7 +328,9 @@ def main():
     args = parser.parse_args()
     
     print("\n" + "=" * 80)
-    print("🏥 智能中医问答RAG系统 - LangChain中间层")
+    print("🏥 智能中医问答RAG系统 - 检索文档转发服务（V4.0）")
+    print("=" * 80)
+    print("📄 专注于检索文档转发，生成功能由Dify通过Ollama处理")
     print("=" * 80 + "\n")
     
     # 加载配置

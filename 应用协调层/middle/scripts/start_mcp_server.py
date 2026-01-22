@@ -13,6 +13,11 @@ import yaml
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+import uvicorn
+
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -21,6 +26,103 @@ from middle.integrations.mcp_tools import HybridRetrievalMCPTool, get_mcp_tool
 from middle.core.retrieval_coordinator import HybridRetrievalCoordinator
 from middle.models.data_models import RetrievalConfig
 from middle.utils.logging_utils import get_logger, setup_logging
+
+
+class ToolCallRequest(BaseModel):
+    """工具调用请求模型"""
+
+    name: str = Field(..., description="工具名称")
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="传递给工具的参数")
+
+
+def create_fastapi_app(config_path: Optional[str] = None, enable_cors: bool = True) -> FastAPI:
+    """创建 FastAPI 应用并注册 MCP 相关路由"""
+
+    server = MCPToolServer(config_path)
+    app = FastAPI(
+        title="Hybrid Retrieval MCP Server",
+        description="提供 MCP 工具接口的 HTTP 服务",
+        version="1.0.0"
+    )
+
+    if enable_cors:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    @app.on_event("startup")
+    async def startup_event():
+        await server.initialize()
+
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        await server.stop_server()
+
+    @app.get("/", tags=["meta"])
+    async def root():
+        """根路径，返回服务器基本信息"""
+        return {
+            "name": "Hybrid Retrieval MCP Server",
+            "version": "1.0.0",
+            "protocol": "mcp",
+            "capabilities": {
+                "tools": {}
+            }
+        }
+
+    @app.get("/health", tags=["mcp"])
+    async def health_simple():
+        """简化健康检查端点，始终返回200"""
+        return {"status": "ok"}
+
+    @app.get("/api/v1/services/health", tags=["mcp"])
+    async def health_check():
+        """详细健康检查端点"""
+        try:
+            result = await server.mcp_tool.health_check()
+            # 始终返回200，即使内部检查失败也只标记状态
+            return {
+                "status": "ok" if result.get("success", False) else "degraded",
+                **result
+            }
+        except Exception as e:
+            server.logger.error(f"健康检查异常: {e}")
+            return {"status": "error", "error": str(e)}
+
+    @app.get("/tools/list", tags=["mcp"])
+    async def list_tools():
+        """返回工具列表 - MCP标准端点"""
+        try:
+            tools = server.mcp_tool.get_tool_definitions()
+            # 确保返回符合MCP标准的格式
+            return {
+                "tools": tools,
+                "count": len(tools)
+            }
+        except Exception as e:
+            server.logger.error(f"获取工具列表失败: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/tools/call", tags=["mcp"])
+    async def call_tool(request: ToolCallRequest):
+        """调用工具 - MCP标准端点"""
+        try:
+            result = await server.mcp_tool.call_tool(request.name, request.arguments)
+            # 始终返回200，工具执行结果在response中
+            return result
+        except Exception as exc:
+            server.logger.error(f"工具调用异常: {exc}")
+            return {
+                "success": False,
+                "error": str(exc),
+                "tool": request.name
+            }
+
+    return app
 
 
 class MCPToolServer:
@@ -54,7 +156,7 @@ class MCPToolServer:
     def _load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
         """加载配置文件"""
         if config_path is None:
-            config_path = project_root / "langchain" / "config" / "mcp_tools_config.yaml"
+            config_path = Path(__file__).parent.parent / "config" / "mcp_tools_config.yaml"
         
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -229,50 +331,6 @@ class MCPToolServer:
             self.logger.error(f"工具调用失败: {e}")
             raise
     
-    async def start_server(self, host: str = "localhost", port: int = 8001):
-        """
-        启动MCP工具服务器
-        
-        Args:
-            host: 服务器主机
-            port: 服务器端口
-        """
-        try:
-            from datetime import datetime
-            
-            self.stats["start_time"] = datetime.now()
-            self.is_running = True
-            
-            self.logger.info(f"MCP工具服务器启动: {host}:{port}")
-            
-            # 这里应该实现实际的MCP服务器逻辑
-            # 由于MCP协议的具体实现比较复杂，这里提供一个简化的演示
-            
-            print(f"MCP工具服务器已启动")
-            print(f"服务器信息:")
-            print(f"  - 主机: {host}")
-            print(f"  - 端口: {port}")
-            print(f"  - 可用工具数: {len(self.mcp_tool.get_tool_definitions())}")
-            
-            # 显示可用工具
-            tools = self.mcp_tool.get_tool_definitions()
-            print(f"\n可用工具:")
-            for tool in tools:
-                print(f"  - {tool['name']}: {tool['description']}")
-            
-            # 保持服务器运行
-            print(f"\n服务器正在运行... (按 Ctrl+C 停止)")
-            
-            while self.is_running:
-                await asyncio.sleep(1)
-                
-        except KeyboardInterrupt:
-            self.logger.info("收到停止信号，正在关闭服务器...")
-            await self.stop_server()
-        except Exception as e:
-            self.logger.error(f"服务器运行错误: {e}")
-            raise
-    
     async def stop_server(self):
         """停止MCP工具服务器"""
         self.is_running = False
@@ -394,38 +452,37 @@ class MCPToolServer:
             print(f"检索失败: {result['error']}")
 
 
-async def main():
+def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="MCP工具服务器")
     parser.add_argument("--config", "-c", help="配置文件路径")
-    parser.add_argument("--host", default="localhost", help="服务器主机")
+    parser.add_argument("--host", default="0.0.0.0", help="服务器主机")
     parser.add_argument("--port", type=int, default=8001, help="服务器端口")
     parser.add_argument("--demo", action="store_true", help="运行交互式演示")
     parser.add_argument("--log-level", default="INFO", help="日志级别")
-    
+    parser.add_argument("--no-cors", action="store_true", help="禁用CORS")
+
     args = parser.parse_args()
-    
-    # 设置日志
+
     setup_logging(level=args.log_level)
-    
-    # 创建服务器
-    server = MCPToolServer(args.config)
-    
-    try:
-        # 初始化服务器
-        await server.initialize()
-        
-        if args.demo:
-            # 运行交互式演示
+
+    if args.demo:
+        server = MCPToolServer(args.config)
+
+        async def run_demo():
+            await server.initialize()
             await server.run_interactive_demo()
-        else:
-            # 启动服务器
-            await server.start_server(args.host, args.port)
-            
-    except Exception as e:
-        print(f"服务器启动失败: {e}")
-        sys.exit(1)
+
+        asyncio.run(run_demo())
+    else:
+        app = create_fastapi_app(args.config, enable_cors=not args.no_cors)
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level=args.log_level.lower(),
+        )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

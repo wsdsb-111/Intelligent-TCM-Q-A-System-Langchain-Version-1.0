@@ -68,7 +68,7 @@ class SimpleVectorAdapter:
             persist_directory = str(project_root / "检索与知识层" / "faiss_rag" / "向量数据库_768维")
         
         if model_path is None:
-            model_path = r"E:\毕业论文和设计\线上智能中医问答项目\Model Layer\model\iic\nlp_gte_sentence-embedding_chinese-base\iic\nlp_gte_sentence-embedding_chinese-base"
+            model_path = r"E:\毕业论文和设计\线上智能中医问答项目\Model Layer\model\sentence-transformers\nlp_gte_sentence-embedding_chinese-base"
         
         if keyword_csv_path is None:
             keyword_csv_path = str(project_root / "检索与知识层" / "keyword" / "knowledge_graph_entities_only.csv")

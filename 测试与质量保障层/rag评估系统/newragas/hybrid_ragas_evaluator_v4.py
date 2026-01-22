@@ -103,7 +103,7 @@ QWEN_FLASH_CONFIG = {
 
 # 检索配置
 RETRIEVAL_CONFIG = {
-    "vector_model_path": str(project_root / "Model Layer" / "model" / "iic" / "nlp_gte_sentence-embedding_chinese-base" / "iic" / "nlp_gte_sentence-embedding_chinese-base"),
+    "vector_model_path": str(project_root / "Model Layer" / "model" / "sentence-transformers" / "nlp_gte_sentence-embedding_chinese-base"),
     "faiss_path": str(project_root / "检索与知识层" / "faiss_rag" / "向量数据库_768维"),
     "neo4j_uri": "neo4j://127.0.0.1:7687",
     "neo4j_user": "neo4j",
@@ -702,20 +702,34 @@ class HybridRagasEvaluatorV4:
         except Exception as e:
             logger.error(f"❌ 关键词库卸载失败: {e}")
     
-    async def process_question(self, question: str) -> Dict[str, Any]:
+    async def process_question(self, question: str, force_route_type: Optional[str] = None) -> Dict[str, Any]:
         """
         处理单个问题的完整RAG流程
         
         流程：用户查询 → 智能路由 → 加载检索组件 → 检索与知识召回 → 关键词增强 → 卸载检索组件 → 加载本地模型生成组件 → 回答生成 → 卸载生成组件 → 输出回答
+        
+        Args:
+            question: 用户问题
+            force_route_type: 强制指定的路由类型 ("vector" 或 "hybrid")，如果为None则使用智能路由
         """
         try:
             logger.info(f"🚀 开始处理问题: {question}")
             start_time = time.time()
             
             # ========== 阶段1: 智能路由 ==========
-            logger.info("📋 阶段1: 智能路由分类")
-            route_type, confidence = self.classify_question(question)
-            logger.info(f"✅ 路由分类完成: {route_type} (置信度: {confidence:.2f})")
+            if force_route_type:
+                # 强制使用指定的路由类型
+                route_type = force_route_type.lower()
+                if route_type not in [RouteType.VECTOR.value, RouteType.HYBRID.value]:
+                    logger.warning(f"⚠️ 无效的路由类型: {force_route_type}，使用默认混合检索")
+                    route_type = RouteType.HYBRID.value
+                confidence = 1.0  # 强制路由的置信度为1.0
+                logger.info(f"📋 阶段1: 强制路由类型 - {route_type} (置信度: {confidence:.2f})")
+            else:
+                # 使用智能路由
+                logger.info("📋 阶段1: 智能路由分类")
+                route_type, confidence = self.classify_question(question)
+                logger.info(f"✅ 路由分类完成: {route_type} (置信度: {confidence:.2f})")
             
             # ========== 阶段2: 加载检索组件 ==========
             logger.info("🔍 阶段2: 加载检索组件")

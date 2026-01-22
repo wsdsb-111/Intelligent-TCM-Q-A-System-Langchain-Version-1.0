@@ -158,12 +158,14 @@ class EmbeddingService:
                 if not config_file.exists():
                     logger.warning(f"⚠️  模型目录缺少 config.json: {self.model_path}")
                 
-                logger.info(f"✅ 从本地路径加载模型: {self.model_path}")
-                logger.info(f"   完整路径: {model_path_obj.resolve()}")
-                logger.info(f"   config.json存在: {(model_path_obj / 'config.json').exists()}")
-                # 使用绝对路径加载，避免路径问题
-                model_full_path = str(model_path_obj.resolve())
-                self.model = SentenceTransformer(model_full_path)
+                resolved_path = model_path_obj.resolve()
+                logger.info(f"✅ 从本地路径加载模型: {resolved_path}")
+                logger.info(f"   config.json存在: {(resolved_path / 'config.json').exists()}")
+                # 使用绝对路径加载，并强制仅使用本地文件
+                self.model = SentenceTransformer(
+                    model_name_or_path=str(resolved_path),
+                    cache_folder=str(resolved_path)
+                )
         else:
             # HuggingFace 模型名称，直接加载
             logger.info(f"📥 从 HuggingFace 加载模型: {self.model_path}")

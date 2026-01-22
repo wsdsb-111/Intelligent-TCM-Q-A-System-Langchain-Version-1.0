@@ -68,9 +68,8 @@ _model_service = None
 _rag_chain = None
 _retrieval_coordinator = None
 
-# 组件状态跟踪
+# 组件状态跟踪（V4.0: 移除model_service状态跟踪）
 _component_status = {
-    'model_service': ComponentStatus(),
     'retrieval_coordinator': ComponentStatus(),
     'vector_adapter': ComponentStatus(),
     'graph_adapter': ComponentStatus(),
@@ -85,7 +84,7 @@ async def lifespan(app: FastAPI):
 
     # 启动时执行
     logger.info("=" * 80)
-    logger.info("🚀 LangChain中间层服务启动中...")
+    logger.info("🚀 检索文档转发服务启动中（V4.0）...")
     logger.info("=" * 80)
 
     try:
@@ -106,7 +105,7 @@ async def lifespan(app: FastAPI):
             return os.path.abspath(os.path.join(config_dir, relative_path))
 
         # 1. 初始化向量适配器
-        logger.info("[1/5] 初始化向量适配器...")
+        logger.info("[1/4] 初始化向量适配器...")
         _component_status['vector_adapter'].state = ComponentState.LOADING
         start_time = time.time()
 
@@ -177,64 +176,30 @@ async def lifespan(app: FastAPI):
         _component_status['vector_adapter'].load_time = time.time() - start_time
         logger.info(f"   ✓ 向量适配器初始化完成，耗时: {_component_status['vector_adapter'].load_time:.2f}秒")
 
-        # 2. 初始化模型服务
-        logger.info("[2/5] 初始化模型服务...")
-        _component_status['model_service'].state = ComponentState.LOADING
-        start_time = time.time()
-
-        _model_service = get_model_service()
-
-        # 从配置读取模型路径
-        base_model_path = config['model']['base_model_path']
-        adapter_path = config['model']['adapter_path']
-
-        # 如果是相对路径，转换为绝对路径（相对于配置文件目录）
-        if not os.path.isabs(base_model_path):
-            base_model_path = os.path.abspath(os.path.join(config_dir, base_model_path))
-        if not os.path.isabs(adapter_path):
-            adapter_path = os.path.abspath(os.path.join(config_dir, adapter_path))
-
-        # 设备从配置读取，优先使用GPU
-        model_device = config.get('model', {}).get('device', 'auto')
-        logger.info(f"模型加载目标设备: {model_device}")
-        success = _model_service.load_model(
-            base_model_path=base_model_path,
-            adapter_path=adapter_path,
-            device=model_device
-        )
-
-        if success:
-            _component_status['model_service'].state = ComponentState.LOADED
-            _component_status['model_service'].load_time = time.time() - start_time
-            logger.info(f"   ✓ 模型服务初始化完成，耗时: {_component_status['model_service'].load_time:.2f}秒")
-        else:
-            _component_status['model_service'].state = ComponentState.UNLOADED
-            _component_status['model_service'].last_error = "模型加载失败"
-            logger.error("   ✗ 模型加载失败")
-            raise RuntimeError("模型加载失败")
-
-        # 3. 初始化图检索适配器
-        logger.info("[3/5] 初始化图检索适配器...")
+        # 2. 初始化图检索适配器（V4.0: 不再加载生成模型，生成由Ollama服务处理）
+        logger.info("[2/4] 初始化图检索适配器...")
         _component_status['graph_adapter'].state = ComponentState.LOADING
         start_time = time.time()
 
         graph_config = config.get('retrieval', {}).get('graph', {})
+        # V4.0: 图检索适配器不再需要model_service（如果配置了use_llm_entity_extraction，可能需要LLM）
+        # 但为了简化，图检索适配器可以接受None作为model_service
         graph_adapter = GraphRetrievalAdapter(
             neo4j_uri=graph_config.get('neo4j_uri', "neo4j://127.0.0.1:7687"),
             username=graph_config.get('username', "neo4j"),
             password=graph_config.get('password', "hx1230047"),
             database=graph_config.get('database', "neo4j"),
             timeout=graph_config.get('timeout', 20),
-            model_service=_model_service,
-            use_llm_entity_extraction=graph_config.get('use_llm_entity_extraction', False)
+            model_service=None,  # V4.0: 不再加载生成模型，图检索适配器不使用LLM实体提取
+            use_llm_entity_extraction=False  # V4.0: 禁用LLM实体提取，避免需要模型服务
         )
 
         _component_status['graph_adapter'].state = ComponentState.LOADED
         _component_status['graph_adapter'].load_time = time.time() - start_time
         logger.info(f"   ✓ 图检索适配器初始化完成，耗时: {_component_status['graph_adapter'].load_time:.2f}秒")
 
-        # 4. 初始化检索协调器
-        logger.info("[4/5] 初始化检索协调器...")
+        # 3. 初始化检索协调器
+        logger.info("[3/4] 初始化检索协调器...")
         _component_status['retrieval_coordinator'].state = ComponentState.LOADING
         start_time = time.time()
 
@@ -252,29 +217,35 @@ async def lifespan(app: FastAPI):
         _component_status['retrieval_coordinator'].load_time = time.time() - start_time
         logger.info(f"   ✓ 检索协调器初始化完成，耗时: {_component_status['retrieval_coordinator'].load_time:.2f}秒")
 
-        # 5. 初始化RAG链路
-        logger.info("[5/5] 初始化RAG链路...")
+        # 4. 初始化RAG链路（V4.0: 保留RAG链路用于v1接口，但不再用于生成）
+        logger.info("[4/4] 初始化RAG链路...")
         _component_status['rag_chain'].state = ComponentState.LOADING
         start_time = time.time()
 
-        _rag_chain = RAGChain(
-            retrieval_coordinator=_retrieval_coordinator,
-            max_context_tokens=1500,
-            max_retrieval_results=5
-        )
-
-        # 初始化路由依赖
-        init_routes(_rag_chain, _retrieval_coordinator)
+        # V4.0: RAG链路仍然需要模型服务用于生成，但我们可以传入None或者保留旧的逻辑
+        # 为了兼容性，我们保留RAG链路的初始化，但生成功能已迁移到Ollama
+        # 如果RAGChain需要model_service，我们需要处理
+        try:
+            _rag_chain = RAGChain(
+                retrieval_coordinator=_retrieval_coordinator,
+                max_context_tokens=1500,
+                max_retrieval_results=5
+            )
+            # 初始化路由依赖（v1接口仍然可以使用，但生成功能已迁移）
+            init_routes(_rag_chain, _retrieval_coordinator)
+        except Exception as e:
+            logger.warning(f"RAG链路初始化失败（不影响检索功能）: {e}")
+            _rag_chain = None
         
-        # 初始化Dify节点路由依赖
-        init_dify_routes(_rag_chain, _retrieval_coordinator)
+        # 初始化Dify节点路由依赖（只需要检索协调器）
+        init_dify_routes(None, _retrieval_coordinator)  # V4.0: Dify节点不再需要RAG链路
 
         _component_status['rag_chain'].state = ComponentState.LOADED
         _component_status['rag_chain'].load_time = time.time() - start_time
         logger.info(f"   ✓ RAG链路初始化完成，耗时: {_component_status['rag_chain'].load_time:.2f}秒")
 
-        # 6. 预热检索模块（参照评估系统的预热方式）
-        logger.info("[6/6] 预热检索模块...")
+        # 5. 预热检索模块（参照评估系统的预热方式）
+        logger.info("[5/5] 预热检索模块...")
         try:
             from middle.models.data_models import RetrievalConfig
 
@@ -355,89 +326,85 @@ def _cleanup_components():
     global _model_service, _rag_chain, _retrieval_coordinator
 
     try:
-        # 清理组件
+        # 清理组件（V4.0: 不再清理模型服务）
         if _rag_chain:
             _rag_chain = None
 
         if _retrieval_coordinator:
             _retrieval_coordinator = None
 
-        if _model_service:
-            _model_service = None
+        # V4.0: 不再清理_model_service，因为不再加载
 
         # 更新组件状态
         for component_name in _component_status:
             _component_status[component_name].state = ComponentState.UNLOADED
             _component_status[component_name].unload_time = time.time()
 
-    except Exception as e:
-        logger.error(f"组件清理失败: {e}")
-    
-    try:
-        # 卸载模型
-        if _model_service:
-            _model_service.unload_model()
-            logger.info("   ✓ 模型已卸载")
-        
         # 清理其他资源
         logger.info("   ✓ 资源清理完成")
-        
+
     except Exception as e:
-        logger.error(f"❌ 资源清理失败: {e}", exc_info=True)
+        logger.error(f"❌ 组件清理失败: {e}", exc_info=True)
     
     logger.info("=" * 80)
-    logger.info("👋 LangChain中间层服务已关闭")
+    logger.info("👋 检索文档转发服务已关闭")
     logger.info("=" * 80)
 
 
 def create_app() -> FastAPI:
     """创建FastAPI应用"""
     
-    # 创建应用
+    # 创建应用（V4.0: 专注于检索文档转发）
     app = FastAPI(
-        title="LangChain中间层API",
+        title="检索文档转发服务API",
         description="""
-        # 智能中医问答RAG系统API
+        # 智能中医问答检索文档转发服务（V4.0）
         
         ## 功能特点
         
-        - 🔍 **混合检索**: 集成BM25、向量检索、知识图谱三种检索方式
-        - 🤖 **智能生成**: 基于Qwen1.5-1.8B微调模型的中医问答生成
-        - 🎯 **RAG架构**: 检索增强生成，确保答案准确可靠
-        - 📊 **完整API**: 问答、检索、健康检查等完整接口
-        - 🔌 **Dify就绪**: 预留流式输出和多模态接口，可无缝对接Dify
+        - 🔍 **混合检索**: 集成向量检索、知识图谱两种检索方式
+        - 📄 **文档转发**: 将检索与知识层召回的文档转发给Dify工作流
+        - 🔄 **查询扩展**: text2vec查询扩展，提升检索效果
+        - 📊 **重排序**: bge-reranker重排序，优化文档相关性
+        - 🔌 **Dify集成**: 为Dify工作流提供检索文档转发服务
         
         ## 核心接口
         
-        - **POST /api/v1/query**: 问答接口，返回生成的答案和检索结果
+        - **POST /api/dify/retrieve_documents**: Dify检索与知识召回节点，返回召回文档
+        - **POST /api/dify/expand_and_rerank**: Dify查询扩展与重排序节点
         - **POST /api/v1/retrieve**: 纯检索接口，仅返回检索结果
         - **GET /api/v1/health**: 健康检查，查看系统状态
-        - **POST /api/v1/multimodal**: 多模态接口（预留）
+        
+        ## 架构说明（V4.0）
+        
+        - **检索组件**: 启动时全量加载（向量适配器、图谱适配器、查询扩展模型、重排序模型）
+        - **生成服务**: 由Dify工作流通过Ollama服务独立处理，本服务不提供生成功能
+        - **职责分离**: 专注于检索文档转发，生成由Dify+Ollama处理
         
         ## 使用示例
         
         ```python
         import requests
         
-        # 问答示例
-        response = requests.post("http://localhost:8000/api/v1/query", json={
+        # Dify检索节点调用
+        response = requests.post("http://localhost:8000/api/dify/retrieve_documents", json={
             "query": "头痛怎么治疗",
-            "top_k": 5,
-            "temperature": 0.7
+            "router_type": "hybrid"
         })
         
         result = response.json()
-        print(result["answer"])
+        print(result["documents"])  # 返回召回文档
         ```
         
         ## 技术栈
         
-        - **检索**: BM25 + ChromaDB + Neo4j
-        - **模型**: Qwen1.5-1.8B + LoRA微调
-        - **框架**: FastAPI + LangChain
-        - **融合**: RRF (Reciprocal Rank Fusion)
+        - **检索**: ChromaDB + Faiss + Neo4j
+        - **查询扩展**: text2vec-base-chinese-paraphrase
+        - **重排序**: bge-reranker-base
+        - **框架**: FastAPI
+        - **融合**: 加权融合
         """,
-        version="1.0.0",
+        version="4.0.0",
         lifespan=lifespan,
         docs_url="/docs",
         redoc_url="/redoc",
@@ -532,12 +499,14 @@ def create_app() -> FastAPI:
         """根路径"""
         uptime = int(time.time() - _app_start_time)
         return {
-            "service": "LangChain中间层API",
-            "version": "1.0.0",
+            "service": "检索文档转发服务API",
+            "version": "4.0.0",
             "status": "running",
             "uptime_seconds": uptime,
             "docs": "/docs",
             "health": "/api/v1/health",
+            "architecture": "V4.0 - 检索文档转发架构",
+            "note": "生成功能由Dify工作流通过Ollama服务处理",
             "timestamp": time.time()
         }
     

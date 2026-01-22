@@ -333,7 +333,7 @@ def main(mode="test", chunk_size=DEFAULT_CHUNK_SIZE, encode_batch=DEFAULT_ENCODE
     data_loader = DataLoader()
     
     # 优先使用 config 中的模型路径与缓存目录（允许本地绝对路径）
-    FORCED_MODEL_NAME = MODEL_CONFIG.get("embedding_model", r"E:\毕业论文和设计\线上智能中医问答项目\Model Layer\model\iic\nlp_gte_sentence-embedding_chinese-base\iic\nlp_gte_sentence-embedding_chinese-base")
+    FORCED_MODEL_NAME = MODEL_CONFIG.get("embedding_model", r"E:\毕业论文和设计\线上智能中医问答项目\Model Layer\model\sentence-transformers\nlp_gte_sentence-embedding_chinese-base")
     FORCED_CACHE_DIR = MODEL_CONFIG.get("model_cache_dir", None)
 
     # 调试：打印配置信息

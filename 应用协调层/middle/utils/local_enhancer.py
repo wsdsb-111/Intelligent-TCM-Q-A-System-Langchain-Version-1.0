@@ -102,7 +102,45 @@ class LocalQueryExpander:
             self.logger.error(f"查询扩展失败: {e}")
         
         return expanded_queries
-    
+
+    def expand(self, query: str, max_expansions: int = 2) -> List[str]:
+        """
+        同步版本的查询扩展（供线程池调用）。
+        逻辑与 expand_query 一致，但不使用异步关键字，避免事件循环干扰。
+        """
+        self.logger.info(f"扩展查询: '{query}'")
+        
+        expanded_queries = [query]  # 始终包含原始查询
+        
+        try:
+            # 生成术语替换的候选查询
+            candidates = self._generate_candidates(query)
+            
+            if not candidates:
+                self.logger.info("未生成候选查询，返回原始查询")
+                return expanded_queries
+            
+            # 计算相似度
+            query_emb = self.model.encode(query, convert_to_tensor=True)
+            candidate_embs = self.model.encode(candidates, convert_to_tensor=True)
+            
+            # 计算余弦相似度
+            from torch.nn.functional import cosine_similarity
+            similarities = cosine_similarity(query_emb.unsqueeze(0), candidate_embs)
+            
+            # 选择top-k最相似的（相似度 > 0.7）
+            for i, sim in enumerate(similarities):
+                if sim > 0.7 and len(expanded_queries) < max_expansions + 1:
+                    expanded_queries.append(candidates[i])
+                    self.logger.debug(f"  扩展: {candidates[i]} (相似度={sim:.4f})")
+            
+            self.logger.info(f"查询扩展完成: {len(expanded_queries)}个查询")
+            
+        except Exception as e:
+            self.logger.error(f"查询扩展失败: {e}")
+        
+        return expanded_queries
+
     def _generate_candidates(self, query: str) -> List[str]:
         """生成候选改写查询"""
         candidates = []
@@ -156,9 +194,9 @@ class LocalReranker:
             self.logger.error(f"模型加载失败: {e}")
             raise
     
-    async def rerank(self, query: str, documents: List[str], top_k: int = 5) -> List[Tuple[int, float]]:
+    def rerank(self, query: str, documents: List[str], top_k: int = 5) -> List[Tuple[int, float]]:
         """
-        重排序文档
+        重排序文档（同步方法，供线程池调用）
         
         Args:
             query: 查询文本

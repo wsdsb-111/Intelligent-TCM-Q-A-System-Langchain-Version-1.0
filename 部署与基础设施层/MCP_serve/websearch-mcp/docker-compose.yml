@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  websearch-mcp:
+    build: .
+    container_name: websearch-mcp
+    restart: unless-stopped
+    env_file:
+      - sample.env
+    ports:
+      - "8062:8062"
+    networks:
+      - dify_network
+
+networks:
+  dify_network:
+    external: true
+
+

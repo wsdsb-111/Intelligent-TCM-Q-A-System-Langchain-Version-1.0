@@ -68,7 +68,7 @@ retrieval:
   vector:
     persist_directory: "../../../检索与知识层/faiss_rag/向量数据库_768维"
     collection_name: "tcm_qa_collection"
-    model_path: "E:/毕业论文和设计/线上智能中医问答项目/Model Layer/model/iic/nlp_gte_sentence-embedding_chinese-base/iic/nlp_gte_sentence-embedding_chinese-base"  # 使用评估系统的本地绝对路径（使用正斜杠）
+    model_path: "E:/毕业论文和设计/线上智能中医问答项目/Model Layer/model/iic/nlp_gte_sentence-embedding_chinese-base/iic/nlp_gte_sentence-embedding_chinese-base"  # 使用正确的嵌入模型路径
     dimension: 768  # 指定向量维度
     timeout: 60  # 大幅增加超时时间，首次加载模型可能较慢
     score_threshold: 0.0  # 参考评估系统，移除阈值过滤以确保召回
